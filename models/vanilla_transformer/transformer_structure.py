@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 
-class TransformerConfig():
+class TransformerConfig:
     def __init__(self, batch_size, seq_len=256,
                  encoder_layer=6, decoder_layer=6, d_model=512, num_head=8):
         self.batch_size = batch_size
@@ -34,50 +34,46 @@ Without batch size:
     formerly,  Score tensor [seq_len * seq_len] * V_0 [seq_len * d_v], result in Z_0 [seq_len * d_v] 
     (since softmax and divide by sqrt(d_k) won't change the dim, let's ignore them for now)
     
-    From a multi_head perspective, since we are going to apply the since attention operation  many times (6,12 depend on the number of encode/decoder layer)
+    From a multi_head perspective, since we are going to apply the since attention operation  many times (6,12 depend on
+     the number of encode/decoder layer)
     We want to maintain the same dim form input X and final output Z
     which indicate we have to find a way to assembly those Z_i [seq_len * d_v] togather,where i is the index of header,
     make Z has the same dim of X [seq_len * d_model], the simplest way come to one's head is stack those Z_i togather. 
     d_v = d_model / num_head
     
     
-    Put all the head togather, we got
-    X [seq_len * d_model] * Head Weight W_q [num_head * d_model * d_q], resulted Q [num_head * seq_len * d_q]
-    But this can't be done directly, since the dim of X is [seq_len * d_model], we have to expand the dim of X to [num_head * seq_len * d_model]
-    So the final calculation is
-    X_expand [ num_head * seq_len * d_model] * Head Weight W_q [num_head * d_model * d_q], resulted multi_head_K [num_head * seq_len * d_q]
+    Put all the head togather, we got X [seq_len * d_model] * Head Weight W_q [num_head * d_model * d_q], resulted Q 
+    [num_head * seq_len * d_q] But this can't be done directly, since the dim of X is [seq_len * d_model], 
+    we have to expand the dim of X to [num_head * seq_len * d_model] So the final calculation is X_expand [ num_head 
+    * seq_len * d_model] * Head Weight W_q [num_head * d_model * d_q], resulted multi_head_K [num_head * seq_len * d_q]
     
-    same for the K and V
-    X_expand [ num_head * seq_len * d_model] will mul the W_k [num_head * d_model * d_k] to get multi_head_K [num_head * seq_len * d_k]
-    X_expand [ num_head * seq_len * d_model] will mul the W_v [num_head * d_model * d_v] to get multi_head_V [num_head * seq_len * d_v]
+    same for the K and V X_expand [ num_head * seq_len * d_model] will mul the W_k [num_head * d_model * d_k] to get 
+    multi_head_K [num_head * seq_len * d_k] X_expand [ num_head * seq_len * d_model] will mul the W_v [num_head * 
+    d_model * d_v] to get multi_head_V [num_head * seq_len * d_v]
     
-    multi_head Score [num_head * seq_len * seq_len] could be computed by mul multi_head_Q [num_head * seq_len * d_q] and multi_head_K^T [num_head * seq_len * d_k]
+    multi_head Score [num_head * seq_len * seq_len] could be computed by mul multi_head_Q [num_head * seq_len * d_q] 
+    and multi_head_K^T [num_head * seq_len * d_k]
     
-    then we can use the multi_head Score to retrieve the multi_head_V
-    multi_head Score [num_head * seq_len * seq_len] *  multi_head_V [num_head * seq_len * d_v], we got multi_head_Z [ num_head, seq_len * d_v]
+    then we can use the multi_head Score to retrieve the multi_head_V multi_head Score [num_head * seq_len * seq_len] 
+    *  multi_head_V [num_head * seq_len * d_v], we got multi_head_Z [ num_head, seq_len * d_v]
     
-    Now we have the foundation, since multi_head_Z and Z has the same number of digits.
-    We could transpose the dim back and stack the multi_head_Z togather to get the final output Z [seq_len * d_model]
-    multi_head_Z [ num_head, seq_len * d_v] -> transpose_multi_head_Z [seq_len * num_head * d_v] -> Z [seq_len * d_model]
+    Now we have the foundation, since multi_head_Z and Z has the same number of digits. We could transpose the dim 
+    back and stack the multi_head_Z togather to get the final output Z [seq_len * d_model] multi_head_Z [ num_head, 
+    seq_len * d_v] -> transpose_multi_head_Z [seq_len * num_head * d_v] -> Z [seq_len * d_model]
     
-With batch size:
-    Now we can add the batch size at beginning of the all the tensor, for all the tensor, the first dim is batch size and
-    all the step won't be affected by the batch size change.
+With batch size: Now we can add the batch size at beginning of the all the tensor, for all the tensor, the first dim 
+    is batch size and all the step won't be affected by the batch size change.
     
-    the whole process could be described as:
-    1. expand input X:
-        X [bz * seq_len * d_model] -> X_expand [bz * num_head * seq_len * d_model]
-    2. compute multi_head_Q, multi_head_K, multi_head_V
-        X_expand [bz * num_head * seq_len * d_model] * W_q [num_head * d_model * d_q] -> multi_head_Q [bz * num_head * seq_len * d_q]
-        X_expand [bz * num_head * seq_len * d_model] * W_k [num_head * d_model * d_k] -> multi_head_K [bz * num_head * seq_len * d_k]
-        X_expand [bz * num_head * seq_len * d_model] * W_v [num_head * d_model * d_v] -> multi_head_V [bz * num_head * seq_len * d_v]
-    3. compute multi_head Score
-        multi_head_Q [bz * num_head * seq_len * d_q] * multi_head_K^T [bz * num_head * seq_len * d_k] -> multi_head Score [bz * num_head * seq_len * seq_len]
-    4. compute multi_head_Z
-        multi_head Score [bz * num_head * seq_len * seq_len] * multi_head_V [bz * num_head * seq_len * d_v] -> multi_head_Z [bz * num_head * seq_len * d_v]
-    5. transpose and stack multi_head_Z
-        multi_head_Z [bz * num_head * seq_len * d_v] -> transpose_multi_head_Z [bz * seq_len * num_head * d_v] -> Z [bz * seq_len * d_model]
-"""
+    the whole process could be described as: 1. expand input X: X [bz * seq_len * d_model] -> X_expand [bz * num_head 
+    * seq_len * d_model] 2. compute multi_head_Q, multi_head_K, multi_head_V X_expand [bz * num_head * seq_len * 
+    d_model] * W_q [num_head * d_model * d_q] -> multi_head_Q [bz * num_head * seq_len * d_q] X_expand [bz * num_head 
+    * seq_len * d_model] * W_k [num_head * d_model * d_k] -> multi_head_K [bz * num_head * seq_len * d_k] X_expand [
+    bz * num_head * seq_len * d_model] * W_v [num_head * d_model * d_v] -> multi_head_V [bz * num_head * seq_len * 
+    d_v] 3. compute multi_head Score multi_head_Q [bz * num_head * seq_len * d_q] * multi_head_K^T [bz * num_head * 
+    seq_len * d_k] -> multi_head Score [bz * num_head * seq_len * seq_len] 4. compute multi_head_Z multi_head Score [
+    bz * num_head * seq_len * seq_len] * multi_head_V [bz * num_head * seq_len * d_v] -> multi_head_Z [bz * num_head 
+    * seq_len * d_v] 5. transpose and stack multi_head_Z multi_head_Z [bz * num_head * seq_len * d_v] -> 
+    transpose_multi_head_Z [bz * seq_len * num_head * d_v] -> Z [bz * seq_len * d_model]"""
 
 
 class ScaledDotProductAttention(nn.Module):
