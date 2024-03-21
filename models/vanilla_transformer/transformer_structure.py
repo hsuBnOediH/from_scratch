@@ -4,13 +4,15 @@ import torch.nn as nn
 
 class TransformerConfig:
     def __init__(self, batch_size, seq_len=256,
-                 encoder_layer=6, decoder_layer=6, d_model=512, num_head=8):
+                 encoder_layer=6, decoder_layer=6, d_model=512, num_head=8, hidden_size=2048, dropout=0.1):
         self.batch_size = batch_size
         self.encoder_layer = encoder_layer
         self.decoder_layer = decoder_layer
         self.d_model = d_model
-        self.num_heads = num_head
+        self.num_head = num_head
         self.seq_len = seq_len
+        self.hidden_size = hidden_size
+        self.dropout = dropout
         self.d_k = d_model // num_head
 
         assert d_model % num_head == 0, "d_model should be divided by num_head "
@@ -81,7 +83,7 @@ class ScaledDotProductAttention(nn.Module):
         super().__init__()
         self.d_k = config.d_model // config.num_head
         self.batch_size = config.batch_size
-        self.max_len = config.max_len
+        self.seq_len = config.seq_len
         self.softmax = nn.Softmax(dim=-1)
 
     """
@@ -108,7 +110,7 @@ class ScaledDotProductAttention(nn.Module):
         # transpose multi_head_Z
         transposed_multi_head_z = torch.transpose(multi_head_Z, -2, -3)
         # reshape [bz * seq_len * num_head * d_v]
-        z = transposed_multi_head_z.view(self.batch_size, self.max_len, -1)
+        z = transposed_multi_head_z.reshape(self.batch_size, self.seq_len, -1)
         return z
 
 
@@ -141,3 +143,104 @@ class SelfAttention(nn.Module):
 
         output = self.scored_dot_product_att(multi_head_q, multi_head_k, multi_head_v)
         return output
+
+
+class FeedForwardNetwork(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        hidden_size = config.hidden_size
+        d_model = config.d_model
+        self.liner1 = nn.Linear(d_model, hidden_size)
+        self.liner2 = nn.Linear(hidden_size, d_model)
+
+    """
+    the input of FFN will be the output of attention module, 
+    since the attention module won't change the dim of input,
+    it will still be [batch_size * seq_len * d_model]
+    
+    In this FeedForwardNetwork, the input will pass the linear layer 1 and extend the dim
+    and go through the sec liner layer change the dim back, keep the dim same for future layer
+    """
+
+    def forward(self, x):
+        linear_1_res = self.liner1(x)
+        linear_2_res = self.liner2(linear_1_res)
+        return linear_2_res
+
+
+class EncoderLayer(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        dropout_rate = config.dropout
+        self.multi_head_attention = SelfAttention(config)
+        self.feed_forward_layer = FeedForwardNetwork(config)
+        self.dropout_1 = nn.Dropout(dropout_rate)
+        self.dropout_2 = nn.Dropout(dropout_rate)
+
+    """
+    For Encoder Layer, what the it's the first layer or not, all the input will be the same dim
+    [bath_size * seq_len * d_model]
+    
+    For the first layer, the input is output of embedding layer
+    
+    For others, since the encoder layer always keep the input and output dim the same. So the EncodeLayer is reusable.
+    
+    
+    The EncodeLayer will have two sub layers, 
+    1. multi-head attention 
+    2. feed forward network
+    After each sub layer, there will be two actions be processed.
+    1. add and norm
+    2. drop out
+    """
+
+    def forward(self, x):
+        # copy an x for later add
+        copy_x = torch.clone(x)
+        # multi_head_attention sub layer
+        multi_head_attention_res = self.multi_head_attention(x)
+        # add and norm
+        add_1_res = torch.add(multi_head_attention_res, copy_x)
+        avg_1 = torch.mean(add_1_res, dim=1, keepdim=True)
+        avg_zero_1_res = add_1_res - avg_1
+        var_1 = torch.var(add_1_res, dim=1, keepdim=True)
+        var_one_1_res = avg_zero_1_res / var_1
+        # dropout
+        sub_layer_1_res = self.dropout_1(var_one_1_res)
+
+        # FFN sub layer
+        copy_ffn_input = torch.tensor(sub_layer_1_res)
+        ffn_res = self.feed_forward_layer(sub_layer_1_res)
+        # add and norm
+        add_2_res = torch.add(ffn_res, copy_ffn_input)
+        avg_2 = torch.mean(add_2_res, dim=1, keepdim=True)
+        avg_zero_2_res = add_2_res - avg_2
+        var_2 = torch.var(add_2_res)
+        var_one_2_res = avg_zero_2_res / var_2
+        # dropout
+
+        sub_layer_2_res = self.dropout_2(var_one_2_res)
+
+        return sub_layer_2_res
+
+
+class Encoder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.encoder_layer_list = nn.Sequential()
+        num_encoder = config.encoder_layer
+        for _ in range(num_encoder):
+            self.encoder_layer_list.append(EncoderLayer(config))
+
+    def forward(self, x):
+        res = self.encoder_layer_list(x)
+        return res
+
+
+class  DecodeLayer(nn.Module):
+    def __init__(self, config):
+        super.__init__()
+
+
+    def forward(self,x):
+        pass
