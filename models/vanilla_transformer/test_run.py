@@ -41,6 +41,27 @@ def test_scaled_dot_product_attention():
         config.batch_size, config.seq_len, config.d_model), f"Output shape is not as expected: {res.shape}"
 
 
+def test_dot_product_attention_with_mask():
+    print(
+        "Testing Dot Product Attention with Mask"
+    )
+    attention = ScaledDotProductAttention(config, attention_mask=True)
+    multi_head_q = torch.randn(config.batch_size, config.num_head,
+                               config.seq_len, config.d_k)
+    multi_head_k = torch.randn(config.batch_size, config.num_head,
+                               config.seq_len, config.d_k)
+    multi_head_v = torch.randn(config.batch_size, config.num_head,
+                               config.seq_len, config.d_k)
+    print(f" Input multi_head_q shape: {multi_head_q.shape}")
+    print(f" Input multi_head_k shape: {multi_head_k.shape}")
+    print(f" Input multi_head_v shape: {multi_head_v.shape}")
+
+    res = attention(multi_head_q, multi_head_k, multi_head_v)
+    print(f" Output shape: {res.shape}")
+    assert res.shape == (
+        config.batch_size, config.seq_len, config.d_model), f"Output shape is not as expected: {res.shape}"
+
+
 def test_feed_forward_network():
     print("Testing Feed Forward Network")
     ff = FeedForwardNetwork(config)
@@ -54,7 +75,28 @@ def test_feed_forward_network():
 
 def test_self_attention():
     print("Testing Self Attention")
-    attention = SelfAttention(config)
+    attention = Attention(config)
+    x = torch.randn(config.batch_size, config.seq_len, config.d_model)
+    print(f" Input shape: {x.shape}")
+    res = attention(x)
+    print(f" Output shape: {res.shape}")
+    assert res.shape == (
+        config.batch_size, config.seq_len, config.d_model), f"Output shape is not as expected: {res.shape}"
+
+def test_cross_attention():
+    print("Testing Cross Attention")
+    attention = Attention(config)
+    x = torch.randn(config.batch_size, config.seq_len, config.d_model)
+    y = torch.randn(config.batch_size, config.seq_len, config.d_model)
+    print(f" Input shape: {x.shape}")
+    res = attention(x, y)
+    print(f" Output shape: {res.shape}")
+    assert res.shape == (
+        config.batch_size, config.seq_len, config.d_model), f"Output shape is not as expected: {res.shape}"
+
+def test_self_attention_with_mask():
+    print("Testing Self Attention with Mask")
+    attention = Attention(config, is_decoder=True)
     x = torch.randn(config.batch_size, config.seq_len, config.d_model)
     print(f" Input shape: {x.shape}")
     res = attention(x)
@@ -80,6 +122,17 @@ def test_encoder():
     x = torch.randn(config.batch_size, config.seq_len, config.d_model)
     print(f" Input shape: {x.shape}")
     res = encoder(x)
+    print(f" Output shape: {res.shape}")
+    assert res.shape == (
+        config.batch_size, config.seq_len, config.d_model), f"Output shape is not as expected: {res.shape}"
+
+def test_decoder_layer():
+    print("Testing Decoder Layer")
+    decoder_layer = DecoderLayer(config)
+    x = torch.randn(config.batch_size, config.seq_len, config.d_model)
+    memory = torch.randn(config.batch_size, config.seq_len, config.d_model)
+    print(f" Input shape: {x.shape}")
+    res = decoder_layer(x, memory)
     print(f" Output shape: {res.shape}")
     assert res.shape == (
         config.batch_size, config.seq_len, config.d_model), f"Output shape is not as expected: {res.shape}"

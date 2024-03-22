@@ -79,12 +79,14 @@ With batch size: Now we can add the batch size at beginning of the all the tenso
 
 
 class ScaledDotProductAttention(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, attention_mask=False):
         super().__init__()
         self.d_k = config.d_model // config.num_head
         self.batch_size = config.batch_size
         self.seq_len = config.seq_len
         self.softmax = nn.Softmax(dim=-1)
+        self.attention_mask = attention_mask
+        self.num_head = config.num_head
 
     """
     multi_head_Q [bz * num_head * seq_len * d_q]
@@ -97,6 +99,15 @@ class ScaledDotProductAttention(nn.Module):
         transpose_multi_head_k = torch.transpose(multi_head_k, -1, -2)
         # multi_head_Q * multi_head_K ^ T
         multi_head_score = torch.matmul(multi_head_q, transpose_multi_head_k)
+        if self.attention_mask:
+            single_head_attention_mask = torch.zeros(self.seq_len, self.seq_len)
+            for i in range(self.seq_len):
+                single_head_attention_mask[i, i + 1:] = float('-inf')
+            single_head_attention_mask = single_head_attention_mask.unsqueeze(0)
+            single_head_attention_mask = single_head_attention_mask.unsqueeze(0)
+            multi_head_attention_mask = single_head_attention_mask.expand(self.batch_size, self.num_head, -1, -1)
+            multi_head_score += multi_head_attention_mask
+
         # scale
         d_k = torch.tensor(self.d_k)
         sqrt_d_k = torch.sqrt(d_k)
@@ -114,8 +125,8 @@ class ScaledDotProductAttention(nn.Module):
         return z
 
 
-class SelfAttention(nn.Module):
-    def __init__(self, config):
+class Attention(nn.Module):
+    def __init__(self, config, is_decoder=False):
         super().__init__()
         d_model = config.d_model
         self.batch_size = config.batch_size
@@ -125,14 +136,31 @@ class SelfAttention(nn.Module):
         self.W_q = nn.Linear(d_model, d_model)
         self.W_k = nn.Linear(d_model, d_model)
         self.W_v = nn.Linear(d_model, d_model)
-        self.scored_dot_product_att = ScaledDotProductAttention(config)
+        if is_decoder:
+            self.scored_dot_product_att = ScaledDotProductAttention(config, attention_mask=True)
+        else:
+            self.scored_dot_product_att = ScaledDotProductAttention(config)
 
-    def forward(self, x):
+    def forward(self, q_input=None, k_input=None, v_input=None):
+        if q_input is None:
+            # error handling
+            raise ValueError(" For Attention module, at least one of q_input should be provided")
         # x [batch_size, seq_len, d_model]
         # q, k, v [batch_size,seq_len,d_model]
-        q = self.W_q(x)
-        k = self.W_k(x)
-        v = self.W_v(x)
+        q = self.W_q(q_input)
+        if k_input is None:
+            k = self.W_k(q_input)
+        else:
+            k = self.W_k(k_input)
+
+        if v_input is None:
+            if k_input is None:
+                v = self.W_v(q_input)
+            else:
+                v = self.W_v(k_input)
+        else:
+            v = self.W_v(v_input)
+
         multi_head_q = q.view(self.batch_size, self.seq_len, self.num_head, self.d_k)
         multi_head_q = torch.transpose(multi_head_q, -2, -3)
         multi_head_k = k.view(self.batch_size, self.seq_len, self.num_head, self.d_k)
@@ -164,7 +192,8 @@ class FeedForwardNetwork(nn.Module):
 
     def forward(self, x):
         linear_1_res = self.liner1(x)
-        linear_2_res = self.liner2(linear_1_res)
+        active_res = nn.functional.relu(linear_1_res)
+        linear_2_res = self.liner2(active_res)
         return linear_2_res
 
 
@@ -172,7 +201,7 @@ class EncoderLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
         dropout_rate = config.dropout
-        self.multi_head_attention = SelfAttention(config)
+        self.multi_head_attention = Attention(config)
         self.feed_forward_layer = FeedForwardNetwork(config)
         self.dropout_1 = nn.Dropout(dropout_rate)
         self.dropout_2 = nn.Dropout(dropout_rate)
@@ -228,8 +257,8 @@ class Encoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.encoder_layer_list = nn.Sequential()
-        num_encoder = config.encoder_layer
-        for _ in range(num_encoder):
+        num_encoder_layer = config.encoder_layer
+        for _ in range(num_encoder_layer):
             self.encoder_layer_list.append(EncoderLayer(config))
 
     def forward(self, x):
@@ -237,10 +266,81 @@ class Encoder(nn.Module):
         return res
 
 
-class  DecodeLayer(nn.Module):
+class DecoderLayer(nn.Module):
     def __init__(self, config):
-        super.__init__()
+        super().__init__()
+        self.self_attention = Attention(config, is_decoder=True)
+        self.cross_attention = Attention(config)
+        self.ffn = FeedForwardNetwork(config)
+        self.dropout_1 = nn.Dropout(config.dropout)
+        self.dropout_2 = nn.Dropout(config.dropout)
+        self.dropout_3 = nn.Dropout(config.dropout)
+
+    def forward(self, decoder_input, encode_input):
+        copy_self_attention_input = torch.clone(decoder_input)
+        # masked multi head attention sub layer
+        self_attention_res = self.self_attention(decoder_input)
+        # add and norm
+        add_self_attention_res = self_attention_res + copy_self_attention_input
+        avg_self_attention = add_self_attention_res.mean(dim=-2, keepdim=True)
+        zero_avg_self_attention_res = add_self_attention_res - avg_self_attention
+
+        var_self_attention = add_self_attention_res.var(dim=-2, keepdim=True)
+        normalized_self_attention_res = zero_avg_self_attention_res / var_self_attention
+        sub_layer_1_res = self.dropout_1(normalized_self_attention_res)
+
+        # cross attention sub layer
+        copy_cross_attention_input = torch.tensor(sub_layer_1_res)
+        cross_attention_res = self.cross_attention(sub_layer_1_res, encode_input)
+        # add and norm
+        add_cross_attention_res = cross_attention_res + copy_cross_attention_input
+        avg_cross_attention = add_cross_attention_res.mean(dim=-2, keepdim=True)
+        zero_avg_cross_attention_res = add_cross_attention_res - avg_cross_attention
+
+        var_cross_attention = add_cross_attention_res.var(dim=-2, keepdim=True)
+        normalized_cross_attention_res = zero_avg_cross_attention_res / var_cross_attention
+        sub_layer_2_res = self.dropout_2(normalized_cross_attention_res)
+
+        # FFN sub layer
+        copy_ffn_input = torch.clone(sub_layer_2_res)
+        ffn_res = self.ffn(sub_layer_2_res)
+        # add and norm
+        add_ffn_res = ffn_res + copy_ffn_input
+        avg_ffn = add_ffn_res.mean(dim=-2, keepdim=True)
+        zero_avg_ffn_res = add_ffn_res - avg_ffn
+
+        var_ffn = add_ffn_res.var(dim=-2, keepdim=True)
+        normalized_ffn_res = zero_avg_ffn_res / var_ffn
+        sub_layer_3_res = self.dropout_3(normalized_ffn_res)
+
+        return sub_layer_3_res
 
 
-    def forward(self,x):
-        pass
+class Decoder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.decoder_layer_list = nn.Sequential()
+        num_decoder_layer = config.encoder_layer
+        for _ in range(num_decoder_layer):
+            self.decoder_layer_list.append(
+                DecoderLayer(config)
+            )
+
+    def forward(self, decoder_input, encoder_input):
+        res = self.decoder_layer_list(decoder_input, encoder_input)
+        return res
+
+
+class EmbeddingLayer(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.batch_size = config.batch_size
+        embedding_dim = config.d_model
+        vocab_size = config.vocab_size
+        self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
+
+    # the input of embedding layer is batch of token id
+    # [batch_size * seq_len]
+    def forward(self, input):
+        res = self.embedding(input)
+        return res
