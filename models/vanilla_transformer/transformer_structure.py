@@ -313,7 +313,7 @@ class DecoderLayer(nn.Module):
         normalized_ffn_res = zero_avg_ffn_res / var_ffn
         sub_layer_3_res = self.dropout_3(normalized_ffn_res)
 
-        return sub_layer_3_res
+        return sub_layer_3_res, encode_input
 
 
 class Decoder(nn.Module):
@@ -326,8 +326,9 @@ class Decoder(nn.Module):
                 DecoderLayer(config)
             )
 
-    def forward(self, decoder_input, encoder_input):
-        res = self.decoder_layer_list(decoder_input, encoder_input)
+    def forward(self, prev_decoder_output_and_encoder_output):
+        prev_decoder_output, encoder_output = prev_decoder_output_and_encoder_output
+        res = self.decoder_layer_list(prev_decoder_output, encoder_output)
         return res
 
 
@@ -344,3 +345,50 @@ class EmbeddingLayer(nn.Module):
     def forward(self, input):
         res = self.embedding(input)
         return res
+
+
+class PositionalEncodingLayer(nn.Module):
+
+    def __init__(self, config):
+        super().__init__()
+        batch_size = config.batch_size
+        seq_len = config.seq_len
+        d_model = config.d_model
+
+        pos = torch.arange(seq_len)
+        pos = pos.unsqueeze(1)
+        pos = pos.expand(seq_len, seq_len)
+
+        div_term = torch.arange(d_model).unsqueeze(0).expand(seq_len, d_model)
+        div_term = div_term / d_model * torch.log(torch.tensor(10000.0))
+        div_term = torch.exp(div_term)
+
+        # pos / div_term
+        inner = pos / div_term
+
+        sin_term = torch.sin(inner)
+        cos_term = torch.cos(inner)
+
+        factor_0 = (torch.arange(d_model) + 1) % 2
+        factor_1 = torch.arange(d_model) % 2
+
+        # multiply sin_term with factor_0 and cos_term with factor_1
+        pos_encoding = sin_term * factor_0 + cos_term * factor_1
+        pos_encoding = pos_encoding.unsqueeze(0)
+        self.pos_encoding = pos_encoding.expand(batch_size, -1, -1)
+
+    # input is word embedding,
+    # [batch_size * seq_len * d_model]
+    def forward(self, embedding):
+        return embedding + self.pos_encoding
+
+
+class Transformer:
+    def __init__(self, config):
+        self.embedding_layer = EmbeddingLayer(config)
+        self.positional_encoding_layer = PositionalEncodingLayer(config)
+        self.encoder = Encoder(config)
+        self.decoder = Decoder(config)
+
+    def forward(self, input):
+        pass
