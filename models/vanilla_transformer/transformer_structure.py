@@ -4,7 +4,8 @@ import torch.nn as nn
 
 class TransformerConfig:
     def __init__(self, batch_size, seq_len=256,
-                 encoder_layer=6, decoder_layer=6, d_model=512, num_head=8, hidden_size=2048, dropout=0.1):
+                 encoder_layer=6, decoder_layer=6, d_model=512, num_head=8,
+                 hidden_size=2048, dropout=0.1, vocab_size=50000):
         self.batch_size = batch_size
         self.encoder_layer = encoder_layer
         self.decoder_layer = decoder_layer
@@ -14,6 +15,7 @@ class TransformerConfig:
         self.hidden_size = hidden_size
         self.dropout = dropout
         self.d_k = d_model // num_head
+        self.vocab_size = vocab_size
 
         assert d_model % num_head == 0, "d_model should be divided by num_head "
 
@@ -276,7 +278,8 @@ class DecoderLayer(nn.Module):
         self.dropout_2 = nn.Dropout(config.dropout)
         self.dropout_3 = nn.Dropout(config.dropout)
 
-    def forward(self, decoder_input, encode_input):
+    def forward(self, decoder_input_and_encode_input):
+        decoder_input, encode_input = decoder_input_and_encode_input
         copy_self_attention_input = torch.clone(decoder_input)
         # masked multi head attention sub layer
         self_attention_res = self.self_attention(decoder_input)
@@ -326,9 +329,8 @@ class Decoder(nn.Module):
                 DecoderLayer(config)
             )
 
-    def forward(self, prev_decoder_output_and_encoder_output):
-        prev_decoder_output, encoder_output = prev_decoder_output_and_encoder_output
-        res = self.decoder_layer_list(prev_decoder_output, encoder_output)
+    def forward(self, prev_decoder_output, encoder_output):
+        res = self.decoder_layer_list((prev_decoder_output, encoder_output))
         return res
 
 
@@ -357,7 +359,7 @@ class PositionalEncodingLayer(nn.Module):
 
         pos = torch.arange(seq_len)
         pos = pos.unsqueeze(1)
-        pos = pos.expand(seq_len, seq_len)
+        pos = pos.expand(seq_len, d_model)
 
         div_term = torch.arange(d_model).unsqueeze(0).expand(seq_len, d_model)
         div_term = div_term / d_model * torch.log(torch.tensor(10000.0))
@@ -383,12 +385,27 @@ class PositionalEncodingLayer(nn.Module):
         return embedding + self.pos_encoding
 
 
-class Transformer:
+class Transformer(nn.Module):
     def __init__(self, config):
+        super().__init__()
         self.embedding_layer = EmbeddingLayer(config)
         self.positional_encoding_layer = PositionalEncodingLayer(config)
         self.encoder = Encoder(config)
         self.decoder = Decoder(config)
 
-    def forward(self, input):
-        pass
+    # input is batch of seq token
+    # size [batch_size, seq_len]
+    def forward(self, src_input, tgt_input):
+        src_embedding = self.embedding_layer(src_input)
+        tgt_embedding = self.embedding_layer(tgt_input)
+
+        # embedding [batch_size, seq_len, d_model]
+        src_pe_embedding = self.positional_encoding_layer(src_embedding)
+        tgt_pe_embedding = self.positional_encoding_layer(tgt_embedding)
+
+        # positional_encoded_embedding [batch_size * seq_len * d_model]
+        encoder_output = self.encoder(src_pe_embedding)
+
+        decoder_output, encoder_mem = self.decoder(encoder_output, tgt_pe_embedding)
+
+        return decoder_output
