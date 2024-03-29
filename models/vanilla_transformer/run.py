@@ -1,4 +1,6 @@
 import os
+import sys
+sys.path.append('../../tokenizer')
 VOCAB_SIZE = 37000
 # read in files
 raw_data_path = "../../data/translation/wmt14-en-de/raw"
@@ -13,7 +15,6 @@ from tokenizer.bpe.BPE import BPETokenizer
 
 bpe_tokenizer = BPETokenizer(corpus, VOCAB_SIZE)
 bpe_tokenizer.train()
-
 
 # write the encode res fro train_en to "../../data/translation/wmt14-en-de/tokenized/train/encoded_train.en"
 # write the encode res fro train_de to "../../data/translation/wmt14-en-de/tokenized/train/encoded_train.de"
@@ -34,7 +35,6 @@ with open(encoded_train_en_path, "w") as f:
 with open(encoded_train_de_path, "w") as f:
     for sentence in train_de:
         f.write(" ".join(bpe_tokenizer.encode(sentence)) + "\n")
-
 
 # write the vocab to "../../data/translation/wmt14-en-de/tokenized/vocab"
 
