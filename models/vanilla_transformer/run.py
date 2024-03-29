@@ -1,6 +1,6 @@
 import os
 import sys
-sys.path.append('../../tokenizer')
+sys.path.append('../../tokenizer/bpe')
 VOCAB_SIZE = 37000
 # read in files
 raw_data_path = "../../data/translation/wmt14-en-de/raw"
