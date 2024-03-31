@@ -5,7 +5,7 @@ import torch.nn as nn
 class TransformerConfig:
     def __init__(self, batch_size, seq_len=256,
                  encoder_layer=6, decoder_layer=6, d_model=512, num_head=8,
-                 hidden_size=2048, dropout=0.1, vocab_size=50000):
+                 hidden_size=2048, dropout=0.1, vocab_size=50000, device="cpu"):
         self.batch_size = batch_size
         self.encoder_layer = encoder_layer
         self.decoder_layer = decoder_layer
@@ -16,6 +16,7 @@ class TransformerConfig:
         self.dropout = dropout
         self.d_k = d_model // num_head
         self.vocab_size = vocab_size
+        self.device = device
 
         assert d_model % num_head == 0, "d_model should be divided by num_head "
 
@@ -81,13 +82,21 @@ With batch size: Now we can add the batch size at beginning of the all the tenso
 
 
 class ScaledDotProductAttention(nn.Module):
-    def __init__(self, config, attention_mask=False):
+    def __init__(self, config, has_attention_mask=False):
         super().__init__()
         self.d_k = config.d_model // config.num_head
         self.batch_size = config.batch_size
         self.seq_len = config.seq_len
         self.softmax = nn.Softmax(dim=-1)
-        self.attention_mask = attention_mask
+        if has_attention_mask:
+            single_head_attention_mask = torch.zeros(self.seq_len, self.seq_len)
+            for i in range(self.seq_len):
+                single_head_attention_mask[i, i + 1:] = float('-inf')
+            single_head_attention_mask = single_head_attention_mask.unsqueeze(0)
+            single_head_attention_mask = single_head_attention_mask.unsqueeze(0)
+            self.attention_mask = single_head_attention_mask.expand(self.batch_size, config.num_head, -1, -1).to(config.device)
+        else:
+            self.attention_mask = None
         self.num_head = config.num_head
 
     """
@@ -96,20 +105,19 @@ class ScaledDotProductAttention(nn.Module):
     multi_head_V [bz * num_head * seq_len * d_v]
     """
 
-    def forward(self, multi_head_q, multi_head_k, multi_head_v):
+    def forward(self, multi_head_q, multi_head_k, multi_head_v, padding_mask=None):
         # transpose the multi_head_K
         transpose_multi_head_k = torch.transpose(multi_head_k, -1, -2)
         # multi_head_Q * multi_head_K ^ T
         multi_head_score = torch.matmul(multi_head_q, transpose_multi_head_k)
-        if self.attention_mask:
-            single_head_attention_mask = torch.zeros(self.seq_len, self.seq_len)
-            for i in range(self.seq_len):
-                single_head_attention_mask[i, i + 1:] = float('-inf')
-            single_head_attention_mask = single_head_attention_mask.unsqueeze(0)
-            single_head_attention_mask = single_head_attention_mask.unsqueeze(0)
-            multi_head_attention_mask = single_head_attention_mask.expand(self.batch_size, self.num_head, -1, -1)
-            multi_head_score += multi_head_attention_mask
+        if self.attention_mask is not None:
+            multi_head_score += self.attention_mask
 
+        if padding_mask is not None:
+            padding_mask = padding_mask.unsqueeze(1)
+            neg_inf = torch.tensor(float('-inf'))
+            neg_inf = neg_inf.to(padding_mask.device)
+            multi_head_score = torch.where(padding_mask == 1, multi_head_score, neg_inf)
         # scale
         d_k = torch.tensor(self.d_k)
         sqrt_d_k = torch.sqrt(d_k)
@@ -139,11 +147,11 @@ class Attention(nn.Module):
         self.W_k = nn.Linear(d_model, d_model)
         self.W_v = nn.Linear(d_model, d_model)
         if is_decoder:
-            self.scored_dot_product_att = ScaledDotProductAttention(config, attention_mask=True)
+            self.scored_dot_product_att = ScaledDotProductAttention(config, has_attention_mask=True)
         else:
             self.scored_dot_product_att = ScaledDotProductAttention(config)
 
-    def forward(self, q_input=None, k_input=None, v_input=None):
+    def forward(self, q_input=None, k_input=None, v_input=None, padding_mask=None):
         if q_input is None:
             # error handling
             raise ValueError(" For Attention module, at least one of q_input should be provided")
@@ -171,7 +179,9 @@ class Attention(nn.Module):
         multi_head_v = v.view(self.batch_size, self.seq_len, self.num_head, self.d_k)
         multi_head_v = torch.transpose(multi_head_v, -2, -3)
 
-        output = self.scored_dot_product_att(multi_head_q, multi_head_k, multi_head_v)
+        if padding_mask is not None:
+            padding_mask = padding_mask.unsqueeze(1)
+        output = self.scored_dot_product_att(multi_head_q, multi_head_k, multi_head_v, padding_mask)
         return output
 
 
@@ -225,11 +235,12 @@ class EncoderLayer(nn.Module):
     2. drop out
     """
 
-    def forward(self, x):
+    def forward(self, input):
+        x, padding_mask = input
         # copy an x for later add
         copy_x = torch.clone(x)
         # multi_head_attention sub layer
-        multi_head_attention_res = self.multi_head_attention(x)
+        multi_head_attention_res = self.multi_head_attention(x,padding_mask=padding_mask)
         # add and norm
         add_1_res = torch.add(multi_head_attention_res, copy_x)
         avg_1 = torch.mean(add_1_res, dim=1, keepdim=True)
@@ -240,7 +251,7 @@ class EncoderLayer(nn.Module):
         sub_layer_1_res = self.dropout_1(var_one_1_res)
 
         # FFN sub layer
-        copy_ffn_input = torch.tensor(sub_layer_1_res)
+        copy_ffn_input = torch.clone(sub_layer_1_res)
         ffn_res = self.feed_forward_layer(sub_layer_1_res)
         # add and norm
         add_2_res = torch.add(ffn_res, copy_ffn_input)
@@ -252,7 +263,7 @@ class EncoderLayer(nn.Module):
 
         sub_layer_2_res = self.dropout_2(var_one_2_res)
 
-        return sub_layer_2_res
+        return sub_layer_2_res,padding_mask
 
 
 class Encoder(nn.Module):
@@ -263,8 +274,8 @@ class Encoder(nn.Module):
         for _ in range(num_encoder_layer):
             self.encoder_layer_list.append(EncoderLayer(config))
 
-    def forward(self, x):
-        res = self.encoder_layer_list(x)
+    def forward(self, x, padding_mask=None):
+        res = self.encoder_layer_list((x, padding_mask))
         return res
 
 
@@ -278,11 +289,11 @@ class DecoderLayer(nn.Module):
         self.dropout_2 = nn.Dropout(config.dropout)
         self.dropout_3 = nn.Dropout(config.dropout)
 
-    def forward(self, decoder_input_and_encode_input):
-        decoder_input, encode_input = decoder_input_and_encode_input
-        copy_self_attention_input = torch.clone(decoder_input)
+    def forward(self, input):
+        encoder_last_output,prev_decoder_output, padding_mask = input
+        copy_self_attention_input = torch.clone(prev_decoder_output)
         # masked multi head attention sub layer
-        self_attention_res = self.self_attention(decoder_input)
+        self_attention_res = self.self_attention(prev_decoder_output, padding_mask=padding_mask)
         # add and norm
         add_self_attention_res = self_attention_res + copy_self_attention_input
         avg_self_attention = add_self_attention_res.mean(dim=-2, keepdim=True)
@@ -293,8 +304,8 @@ class DecoderLayer(nn.Module):
         sub_layer_1_res = self.dropout_1(normalized_self_attention_res)
 
         # cross attention sub layer
-        copy_cross_attention_input = torch.tensor(sub_layer_1_res)
-        cross_attention_res = self.cross_attention(sub_layer_1_res, encode_input)
+        copy_cross_attention_input = torch.clone(sub_layer_1_res)
+        cross_attention_res = self.cross_attention(sub_layer_1_res, encoder_last_output)
         # add and norm
         add_cross_attention_res = cross_attention_res + copy_cross_attention_input
         avg_cross_attention = add_cross_attention_res.mean(dim=-2, keepdim=True)
@@ -316,7 +327,7 @@ class DecoderLayer(nn.Module):
         normalized_ffn_res = zero_avg_ffn_res / var_ffn
         sub_layer_3_res = self.dropout_3(normalized_ffn_res)
 
-        return sub_layer_3_res, encode_input
+        return encoder_last_output,sub_layer_3_res, padding_mask
 
 
 class Decoder(nn.Module):
@@ -329,8 +340,8 @@ class Decoder(nn.Module):
                 DecoderLayer(config)
             )
 
-    def forward(self, prev_decoder_output, encoder_output):
-        res = self.decoder_layer_list((prev_decoder_output, encoder_output))
+    def forward(self, input):
+        res = self.decoder_layer_list(input)
         return res
 
 
@@ -378,6 +389,8 @@ class PositionalEncodingLayer(nn.Module):
         pos_encoding = sin_term * factor_0 + cos_term * factor_1
         pos_encoding = pos_encoding.unsqueeze(0)
         self.pos_encoding = pos_encoding.expand(batch_size, -1, -1)
+        self.pos_encoding = self.pos_encoding.to(config.device)
+
 
     # input is word embedding,
     # [batch_size * seq_len * d_model]
@@ -392,10 +405,12 @@ class Transformer(nn.Module):
         self.positional_encoding_layer = PositionalEncodingLayer(config)
         self.encoder = Encoder(config)
         self.decoder = Decoder(config)
+        self.linear = nn.Linear(config.d_model, config.vocab_size)
+        self.softmax = nn.Softmax(dim=-1)
 
     # input is batch of seq token
     # size [batch_size, seq_len]
-    def forward(self, src_input, tgt_input):
+    def forward(self, src_input, tgt_input, src_padding_mask=None, tgt_padding_mask=None):
         src_embedding = self.embedding_layer(src_input)
         tgt_embedding = self.embedding_layer(tgt_input)
 
@@ -403,9 +418,10 @@ class Transformer(nn.Module):
         src_pe_embedding = self.positional_encoding_layer(src_embedding)
         tgt_pe_embedding = self.positional_encoding_layer(tgt_embedding)
 
-        # positional_encoded_embedding [batch_size * seq_len * d_model]
-        encoder_output = self.encoder(src_pe_embedding)
-
-        decoder_output, encoder_mem = self.decoder(encoder_output, tgt_pe_embedding)
-
-        return decoder_output
+        # positional_encoded_embedding [batch_size * seq_len *
+        encoder_output = self.encoder(src_pe_embedding, src_padding_mask)
+        encoder_last_output,_ = encoder_output
+        _, decoder_output,_= self.decoder((encoder_last_output, tgt_pe_embedding, tgt_padding_mask))
+        decoder_output = self.linear(decoder_output)
+        logits = self.softmax(decoder_output)
+        return logits
