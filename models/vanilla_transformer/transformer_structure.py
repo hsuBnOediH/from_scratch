@@ -44,7 +44,21 @@ from torch.autograd import Variable
 # 4. modelList
 # change the nn.sequential to nn.ModuleList
 # add layer norm only after the last layer
-# res
+# res  --> (escalating  , have no trend to converge)
+
+
+# 5. add layer norm and residual connection
+# res 3.06 --> (escalating  , have no trend to converge)
+
+# 6. using the sub connection class from the harvardnlp
+
+
+
+
+
+def clones(module, N):
+    return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
+
 
 class TransformerConfig:
     def __init__(self, batch_size, seq_len=256,
@@ -192,6 +206,18 @@ class PositionwiseFeedForward(nn.Module):
     def forward(self, x):
         return self.liner2(self.dropout(F.relu(self.liner1(x))))
 
+class SublayerConnection(nn.Module):
+    def __init__(self, config):
+        super(SublayerConnection, self).__init__()
+        self.norm = LayerNorm(config)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x, sublayer):
+        # the input will be normed first and then pass to sublayer
+        # then the dropout will be applied
+        # finally, the output will be added to the input
+        return x + self.dropout(sublayer(self.norm(x)))
+
 class Embeddings(nn.Module):
     def __init__(self, config):
         super(Embeddings,self).__init__()
@@ -204,6 +230,18 @@ class Embeddings(nn.Module):
     def forward(self, input):
         res = self.lut(input) * math.sqrt(self.d_model)
         return res
+
+class LayerNorm(nn.Module):
+    def __init__(self, config):
+        super(LayerNorm, self).__init__()
+        self.a_2 = nn.Parameter(torch.ones(config.d_model))
+        self.b_2 = nn.Parameter(torch.zeros(config.d_model))
+        self.eps = config.eps
+
+    def forward(self, x):
+        mean = x.mean(-1, keepdim=True)
+        std = x.std(-1, keepdim=True)
+        return self.a_2 * (x - mean) / (std + self.eps) + self.b_2
 
 
 class PositionalEncoding(nn.Module):
@@ -230,11 +268,9 @@ class PositionalEncoding(nn.Module):
 class EncoderLayer(nn.Module):
     def __init__(self, config):
         super(EncoderLayer, self).__init__()
-        dropout_rate = config.dropout
         self.multi_head_attention = MultiHeadAttention(config)
-        self.feed_forward_layer = PositionwiseFeedForward(config)
-        self.dropout_1 = nn.Dropout(dropout_rate)
-        self.dropout_2 = nn.Dropout(dropout_rate)
+        self.feed_forward = PositionwiseFeedForward(config)
+        self.sublayer = clones(SublayerConnection(config), 2)
 
     """
     For Encoder Layer, what the it's the first layer or not, all the input will be the same dim
@@ -253,46 +289,12 @@ class EncoderLayer(nn.Module):
     2. drop out
     """
 
-    def forward(self, x, padding_mask=None):
-        # copy an x for later add
-        copy_x = torch.clone(x)
-        # multi_head_attention sub layer
-        multi_head_attention_res = self.multi_head_attention(x, x, x, mask=padding_mask)
-        # add and norm
-        add_1_res = torch.add(multi_head_attention_res, copy_x)
-        avg_1 = torch.mean(add_1_res, dim=1, keepdim=True)
-        avg_zero_1_res = add_1_res - avg_1
-        var_1 = torch.var(add_1_res, dim=1, keepdim=True)
-        var_one_1_res = avg_zero_1_res / var_1
-        # dropout
-        sub_layer_1_res = self.dropout_1(var_one_1_res)
+    def forward(self, x, padding_mask):
+        # the lambda create a temporary function to pass the x to the multi_head_attention with the padding_mask
+        x = self.sublayer[0](x, lambda x: self.multi_head_attention(x, x, x, padding_mask))
+        return self.sublayer[1](x, self.feed_forward)
 
-        # FFN sub layer
-        copy_ffn_input = torch.clone(sub_layer_1_res)
-        ffn_res = self.feed_forward_layer(sub_layer_1_res)
-        # add and norm
-        add_2_res = torch.add(ffn_res, copy_ffn_input)
-        avg_2 = torch.mean(add_2_res, dim=1, keepdim=True)
-        avg_zero_2_res = add_2_res - avg_2
-        var_2 = torch.var(add_2_res)
-        var_one_2_res = avg_zero_2_res / var_2
-        # dropout
 
-        sub_layer_2_res = self.dropout_2(var_one_2_res)
-
-        return sub_layer_2_res
-
-class LayerNorm(nn.Module):
-    def __init__(self, config):
-        super(LayerNorm, self).__init__()
-        self.a_2 = nn.Parameter(torch.ones(config.d_model))
-        self.b_2 = nn.Parameter(torch.zeros(config.d_model))
-        self.eps = config.eps
-
-    def forward(self, x):
-        mean = x.mean(-1, keepdim=True)
-        std = x.std(-1, keepdim=True)
-        return self.a_2 * (x - mean) / (std + self.eps) + self.b_2
 
 class Encoder(nn.Module):
     def __init__(self, config):
@@ -309,52 +311,16 @@ class Encoder(nn.Module):
 
 class DecoderLayer(nn.Module):
     def __init__(self, config):
-        super().__init__()
+        super(DecoderLayer, self).__init__()
         self.self_attention = MultiHeadAttention(config)
         self.cross_attention = MultiHeadAttention(config)
         self.ffn = PositionwiseFeedForward(config)
-        self.dropout_1 = nn.Dropout(config.dropout)
-        self.dropout_2 = nn.Dropout(config.dropout)
-        self.dropout_3 = nn.Dropout(config.dropout)
+        self.sublayer = clones(SublayerConnection(config), 3)
 
-    def forward(self,encoder_last_output, prev_decoder_output, src_padding_mask, padding_mask):
-        copy_self_attention_input = torch.clone(prev_decoder_output)
-        # masked multi head attention sub layer
-        self_attention_res = self.self_attention(prev_decoder_output,prev_decoder_output,prev_decoder_output, mask=padding_mask)
-        # add and norm
-        add_self_attention_res = self_attention_res + copy_self_attention_input
-        avg_self_attention = add_self_attention_res.mean(dim=-2, keepdim=True)
-        zero_avg_self_attention_res = add_self_attention_res - avg_self_attention
-
-        var_self_attention = add_self_attention_res.var(dim=-2, keepdim=True)
-        normalized_self_attention_res = zero_avg_self_attention_res / var_self_attention
-        sub_layer_1_res = self.dropout_1(normalized_self_attention_res)
-
-        # cross attention sub layer
-        copy_cross_attention_input = torch.clone(sub_layer_1_res)
-        cross_attention_res = self.cross_attention(sub_layer_1_res, encoder_last_output,encoder_last_output, mask=src_padding_mask)
-        # add and norm
-        add_cross_attention_res = cross_attention_res + copy_cross_attention_input
-        avg_cross_attention = add_cross_attention_res.mean(dim=-2, keepdim=True)
-        zero_avg_cross_attention_res = add_cross_attention_res - avg_cross_attention
-
-        var_cross_attention = add_cross_attention_res.var(dim=-2, keepdim=True)
-        normalized_cross_attention_res = zero_avg_cross_attention_res / var_cross_attention
-        sub_layer_2_res = self.dropout_2(normalized_cross_attention_res)
-
-        # FFN sub layer
-        copy_ffn_input = torch.clone(sub_layer_2_res)
-        ffn_res = self.ffn(sub_layer_2_res)
-        # add and norm
-        add_ffn_res = ffn_res + copy_ffn_input
-        avg_ffn = add_ffn_res.mean(dim=-2, keepdim=True)
-        zero_avg_ffn_res = add_ffn_res - avg_ffn
-
-        var_ffn = add_ffn_res.var(dim=-2, keepdim=True)
-        normalized_ffn_res = zero_avg_ffn_res / var_ffn
-        sub_layer_3_res = self.dropout_3(normalized_ffn_res)
-
-        return  sub_layer_3_res
+    def forward(self, x, memory, src_padding_mask, tgt_padding_mask):
+        x = self.sublayer[0](x, lambda x: self.self_attention(x, x, x, tgt_padding_mask))
+        x = self.sublayer[1](x, lambda x: self.cross_attention(x, memory, memory, src_padding_mask))
+        return self.sublayer[2](x, self.ffn)
 
 class Decoder(nn.Module):
     def __init__(self, config):
