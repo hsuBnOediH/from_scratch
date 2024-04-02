@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader
 
 from models.vanilla_transformer.dataloder import WMT14ENDEDataset, WMT14ENDEDatasetHuggingFace
 from models.vanilla_transformer.transformer_structure import TransformerConfig, Transformer
+from models.vanilla_transformer.transformer_structure_harvard import EncoderDecoder
 
 tokenizer_folder = "../../data/translation/wmt14-en-de/tokenized"
 
@@ -46,9 +47,10 @@ transformer_config = TransformerConfig(
     num_head=NUM_HEADS,
     dropout=DROPOUT,
     vocab_size=VOCAB_SIZE,
-    device=device
+    device=device,
+    eps = 1e-6,
 )
-transformer = Transformer(transformer_config)
+transformer = EncoderDecoder(transformer_config)
 transformer.to(device)
 
 # adam with beta1 = 0.9, beta2 = 0.98, epsilon = 1e-9
