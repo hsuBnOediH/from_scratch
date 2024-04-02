@@ -50,7 +50,7 @@ transformer_config = TransformerConfig(
     device=device,
     eps = 1e-6,
 )
-transformer = EncoderDecoder(transformer_config)
+transformer = Transformer(transformer_config)
 transformer.to(device)
 
 # adam with beta1 = 0.9, beta2 = 0.98, epsilon = 1e-9

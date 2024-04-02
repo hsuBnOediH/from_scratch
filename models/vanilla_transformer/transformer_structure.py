@@ -1,9 +1,35 @@
 import math
-
 import torch
 import torch.nn as nn
-from torch.autograd import Variable
+import torch.nn.functional as F
 
+
+# Test the harvardnlp implementation of the transformer model
+# under the following config
+# harvard transformer  3.06 --> 1.72
+# my transformer 3.05 --> 3.06  (escalating  , have no trend to converge)
+
+# BATCH_SIZE = 32 if device_type == "mps" else 64
+# SEQ_LEN = 64 if device_type == "mps" else 512
+# ENCODER_LAYER = 6
+# DECODER_LAYER = 6
+# D_MODEL = 256 if device_type == "mps" else 512
+# HIDDEN_DIM = 512 if device_type == "mps" else 2048
+# NUM_HEADS = 8
+# DROPOUT = 0.1
+# VOCAB_SIZE = len(token_to_id)
+# EPOCHS = 30
+# STEPS = 1000000
+# BETA1 = 0.9
+# BETA2 = 0.98
+# EPSILON = 1e-9
+# LEARNING_RATE = 0.00001
+# WARMUP_STEPS = 4000
+
+
+# 1. multi-head attention
+# 1.1 add final linear layer, mask, dropout
+# 1.2 according change the mask in the scaled dot product attention in decoder how to useit
 
 class TransformerConfig:
     def __init__(self, batch_size, seq_len=256,
@@ -22,7 +48,6 @@ class TransformerConfig:
         self.vocab_size = vocab_size
         self.device = device
         self.eps = eps
-
 
         assert d_model % num_head == 0, "d_model should be divided by num_head "
 
@@ -114,7 +139,7 @@ class ScaledDotProductAttention(nn.Module):
         # transpose the multi_head_K
         transpose_multi_head_k = torch.transpose(multi_head_k, -1, -2)
         # multi_head_Q * multi_head_K ^ T
-        multi_head_score = torch.matmul(multi_head_q, transpose_multi_head_k)/self.d_k
+        multi_head_score = torch.matmul(multi_head_q, transpose_multi_head_k) / self.d_k
 
         if self.attention_mask is not None:
             attention_mask = self.attention_mask.to(multi_head_score.device)
@@ -138,62 +163,56 @@ class ScaledDotProductAttention(nn.Module):
         # transpose multi_head_Z
         transposed_multi_head_z = torch.transpose(multi_head_Z, -2, -3)
         # reshape [bz * seq_len * num_head * d_v]
-        z = transposed_multi_head_z.reshape( transposed_multi_head_z.size(0), self.seq_len, -1)
+        z = transposed_multi_head_z.reshape(transposed_multi_head_z.size(0), self.seq_len, -1)
         return z
 
 
-class Attention(nn.Module):
+def scaled_dot_product_attention(q, k, v, mask=None, dropout=None):
+    d_k = q.size(-1)
+    # [batch_size, head_num, seq_len, seq_len]
+    scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
+    if mask is not None:
+        # https://pytorch.org/docs/stable/generated/torch.Tensor.masked_fill_.html#torch.Tensor.masked_fill_
+        scores = scores.masked_fill_(mask == 0, -1e9)
+    p_attn = F.softmax(scores, dim=-1)
+    if dropout is not None:
+        p_attn = dropout(p_attn)
+    # return the weighted value and the attention weights
+    return torch.matmul(p_attn, v), p_attn
+
+
+class MultiHeadAttention(nn.Module):
     def __init__(self, config, is_decoder=False):
-        super(Attention,self).__init__()
-        d_model = config.d_model
-        self.seq_len = config.seq_len
-        self.num_head = config.num_head
+        super(MultiHeadAttention, self).__init__()
         self.d_k = config.d_k
-        self.W_q = nn.Linear(d_model, d_model)
-        self.W_k = nn.Linear(d_model, d_model)
-        self.W_v = nn.Linear(d_model, d_model)
-        if is_decoder:
-            self.scored_dot_product_att = ScaledDotProductAttention(config, has_attention_mask=True)
-        else:
-            self.scored_dot_product_att = ScaledDotProductAttention(config)
+        self.num_head = config.num_head
+        self.d_model = config.d_model
+        self.linear_q = nn.Linear(config.d_model, config.d_k * config.num_head)
+        self.linear_k = nn.Linear(config.d_model, config.d_k * config.num_head)
+        self.linear_v = nn.Linear(config.d_model, config.d_k * config.num_head)
+        self.final_linear = nn.Linear(config.d_k * config.num_head, config.d_model)
+        self.dropout = nn.Dropout(p=config.dropout)
+        self.seq_len = config.seq_len
 
-    def forward(self, q_input=None, k_input=None, v_input=None, padding_mask=None):
-        if q_input is None:
-            # error handling
-            raise ValueError(" For Attention module, at least one of q_input should be provided")
-        # x [batch_size, seq_len, d_model]
-        # q, k, v [batch_size,seq_len,d_model]
-        q = self.W_q(q_input)
-        if k_input is None:
-            k = self.W_k(q_input)
-        else:
-            k = self.W_k(k_input)
+    def forward(self, query, key, value, mask=None):
+        if mask is not None:
+            # TODO
+            mask = mask.unsqueeze(1)
+            mask = mask.unsqueeze(-1)
+        num_batch = query.size(0)
 
-        if v_input is None:
-            if k_input is None:
-                v = self.W_v(q_input)
-            else:
-                v = self.W_v(k_input)
-        else:
-            v = self.W_v(v_input)
-        cur_batch_size = q.size(0)
-        multi_head_q = q.view(cur_batch_size, self.seq_len, self.num_head, self.d_k)
-        multi_head_q = torch.transpose(multi_head_q, -2, -3)
-        multi_head_k = k.view(cur_batch_size, self.seq_len, self.num_head, self.d_k)
-        multi_head_k = torch.transpose(multi_head_k, -2, -3)
+        query = self.linear_q(query).view(num_batch, -1, self.num_head, self.d_k).transpose(1, 2)
+        key = self.linear_k(key).view(num_batch, -1, self.num_head, self.d_k).transpose(1, 2)
+        value = self.linear_v(value).view(num_batch, -1, self.num_head, self.d_k).transpose(1, 2)
+        x, _ =scaled_dot_product_attention(query, key, value, mask=mask, dropout=self.dropout)
 
-        multi_head_v = v.view(cur_batch_size, self.seq_len, self.num_head, self.d_k)
-        multi_head_v = torch.transpose(multi_head_v, -2, -3)
-
-        if padding_mask is not None:
-            padding_mask = padding_mask.unsqueeze(1)
-        output = self.scored_dot_product_att(multi_head_q, multi_head_k, multi_head_v, padding_mask)
-        return output
+        x = x.transpose(1, 2).contiguous().view(num_batch, -1, self.d_model)
+        return self.final_linear(x)
 
 
 class FeedForwardNetwork(nn.Module):
     def __init__(self, config):
-        super(FeedForwardNetwork,self).__init__()
+        super(FeedForwardNetwork, self).__init__()
         hidden_size = config.hidden_size
         d_model = config.d_model
         self.liner1 = nn.Linear(d_model, hidden_size)
@@ -219,9 +238,9 @@ class FeedForwardNetwork(nn.Module):
 
 class EncoderLayer(nn.Module):
     def __init__(self, config):
-        super(EncoderLayer,self).__init__()
+        super(EncoderLayer, self).__init__()
         dropout_rate = config.dropout
-        self.multi_head_attention = Attention(config)
+        self.multi_head_attention = MultiHeadAttention(config)
         self.feed_forward_layer = FeedForwardNetwork(config)
         self.dropout_1 = nn.Dropout(dropout_rate)
         self.dropout_2 = nn.Dropout(dropout_rate)
@@ -248,7 +267,7 @@ class EncoderLayer(nn.Module):
         # copy an x for later add
         copy_x = torch.clone(x)
         # multi_head_attention sub layer
-        multi_head_attention_res = self.multi_head_attention(x,padding_mask=padding_mask)
+        multi_head_attention_res = self.multi_head_attention(x, x, x, mask=padding_mask)
         # add and norm
         add_1_res = torch.add(multi_head_attention_res, copy_x)
         avg_1 = torch.mean(add_1_res, dim=1, keepdim=True)
@@ -271,7 +290,7 @@ class EncoderLayer(nn.Module):
 
         sub_layer_2_res = self.dropout_2(var_one_2_res)
 
-        return sub_layer_2_res,padding_mask
+        return sub_layer_2_res, padding_mask
 
 
 class Encoder(nn.Module):
@@ -290,18 +309,18 @@ class Encoder(nn.Module):
 class DecoderLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.self_attention = Attention(config, is_decoder=True)
-        self.cross_attention = Attention(config)
+        self.self_attention = MultiHeadAttention(config)
+        self.cross_attention = MultiHeadAttention(config)
         self.ffn = FeedForwardNetwork(config)
         self.dropout_1 = nn.Dropout(config.dropout)
         self.dropout_2 = nn.Dropout(config.dropout)
         self.dropout_3 = nn.Dropout(config.dropout)
 
     def forward(self, input):
-        encoder_last_output,prev_decoder_output, padding_mask = input
+        encoder_last_output, src_padding_mask,prev_decoder_output, padding_mask = input
         copy_self_attention_input = torch.clone(prev_decoder_output)
         # masked multi head attention sub layer
-        self_attention_res = self.self_attention(prev_decoder_output, padding_mask=padding_mask)
+        self_attention_res = self.self_attention(prev_decoder_output,prev_decoder_output,prev_decoder_output, mask=padding_mask)
         # add and norm
         add_self_attention_res = self_attention_res + copy_self_attention_input
         avg_self_attention = add_self_attention_res.mean(dim=-2, keepdim=True)
@@ -313,7 +332,7 @@ class DecoderLayer(nn.Module):
 
         # cross attention sub layer
         copy_cross_attention_input = torch.clone(sub_layer_1_res)
-        cross_attention_res = self.cross_attention(sub_layer_1_res, encoder_last_output)
+        cross_attention_res = self.cross_attention(sub_layer_1_res, encoder_last_output,encoder_last_output, mask=src_padding_mask)
         # add and norm
         add_cross_attention_res = cross_attention_res + copy_cross_attention_input
         avg_cross_attention = add_cross_attention_res.mean(dim=-2, keepdim=True)
@@ -335,7 +354,7 @@ class DecoderLayer(nn.Module):
         normalized_ffn_res = zero_avg_ffn_res / var_ffn
         sub_layer_3_res = self.dropout_3(normalized_ffn_res)
 
-        return encoder_last_output,sub_layer_3_res, padding_mask
+        return encoder_last_output, src_padding_mask, sub_layer_3_res, padding_mask
 
 
 class Decoder(nn.Module):
@@ -360,7 +379,6 @@ class EmbeddingLayer(nn.Module):
         vocab_size = config.vocab_size
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         self.d_model = config.d_model
-
 
     # the input of embedding layer is batch of token id
     # [batch_size * seq_len]
@@ -399,15 +417,16 @@ class PositionalEncodingLayer(nn.Module):
         pos_encoding = pos_encoding.unsqueeze(0)
         pos_encoding = pos_encoding.expand(batch_size, -1, -1)
         pos_encoding = pos_encoding.to(config.device)
-        self.register_buffer('pos_encoding',pos_encoding)
-
+        self.register_buffer('pos_encoding', pos_encoding)
 
     # input is word embedding,
     # [batch_size * seq_len * d_model]
     def forward(self, embedding):
         # get the batch size of embedding
         # and match the pos_encoding batch size
-        return embedding + Variable(self.pos_encoding[:, :embedding.size(1)], requires_grad=False)
+        cur_batch_size = embedding.size(0)
+        pos_encoding = self.pos_encoding[:cur_batch_size]
+        return embedding + pos_encoding
 
 
 class Transformer(nn.Module):
@@ -432,8 +451,8 @@ class Transformer(nn.Module):
 
         # positional_encoded_embedding [batch_size * seq_len *
         encoder_output = self.encoder(src_pe_embedding, src_padding_mask)
-        encoder_last_output,_ = encoder_output
-        _, decoder_output,_= self.decoder((encoder_last_output, tgt_pe_embedding, tgt_padding_mask))
+        encoder_last_output, _ = encoder_output
+        _, _,decoder_output, _ = self.decoder((encoder_last_output,src_padding_mask, tgt_pe_embedding, tgt_padding_mask))
         decoder_output = self.linear(decoder_output)
         logits = self.softmax(decoder_output)
         return logits

@@ -1,7 +1,7 @@
 # read in the vocab from "../../data/translation/wmt14-en-de/tokenized/vocab' build the id to token and token to id mapping
 # write the id to token and token to id mapping to "../../data/translation/wmt14-en-de/tokenized/token_to_id.pkl" and "../../data/translation/wmt14-en-de/tokenized/id_to_token.pkl"
 
-tokenizer_folder = "../../data/translation/wmt14-en-de/tokenized"
+tokenizer_folder = "../../wmt14-en-de/tokenized"
 vocab_path = tokenizer_folder + "/vocab"
 token_to_id = {}
 id_to_token = {}
