@@ -1,5 +1,6 @@
 import torch
 import torch.utils.data as data
+from transformers import AutoTokenizer
 
 
 class WMT14ENDEDataset(data.Dataset):
@@ -48,4 +49,43 @@ class WMT14ENDEDataset(data.Dataset):
             "de_input_ids": torch.tensor(de_sentence_id, device=self.device),
             "en_padding_mask": torch.tensor(en_padding_mask, device=self.device),
             "de_padding_mask": torch.tensor(de_padding_mask, device=self.device)
+        }
+
+import torch
+import torch.utils.data as data
+
+
+class WMT14ENDEDatasetHuggingFace(data.Dataset):
+
+    def __init__(self, en_raw_file_path= "",de_raw_file_path="",
+               max_len=512, device="cuda"):
+        self.device = device
+        with open(en_raw_file_path, "r") as f:
+            en_sentence = f.readlines()[:1000]
+        with open(de_raw_file_path, "r") as f:
+            de_sentence = f.readlines()[:1000]
+        assert len(en_sentence) == len(de_sentence), "The number of english and german sentences should be the same"
+        self.data = list(zip(en_sentence, de_sentence))
+        self.max_len = max_len
+        self.tokenizer = AutoTokenizer.from_pretrained("gpt2",pad_token="<pad>")
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        en_sentence,de_sentence = self.data[idx]
+
+        # run huggingface tokenizer
+        en_sentence = self.tokenizer(en_sentence, padding="max_length", truncation=True, max_length=self.max_len, return_tensors="pt")
+        de_sentence = self.tokenizer(de_sentence, padding="max_length", truncation=True, max_length=self.max_len, return_tensors="pt")
+
+
+        en_sentence_id = en_sentence["input_ids"].squeeze().to(self.device)
+        de_sentence_id = de_sentence["input_ids"].squeeze().to(self.device)
+        en_padding_mask = en_sentence["attention_mask"].squeeze().to(self.device)
+        de_padding_mask = de_sentence["attention_mask"].squeeze().to(self.device)
+        return {
+            "en_input_ids": en_sentence_id,
+            "de_input_ids": de_sentence_id,
+            "en_padding_mask": en_padding_mask,
+            "de_padding_mask": de_padding_mask
         }

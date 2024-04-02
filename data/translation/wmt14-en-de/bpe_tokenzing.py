@@ -162,12 +162,6 @@ class BPETokenizer:
         return sum(splits, [])
 
 
-
-
-
-
-
-
 VOCAB_SIZE = 37000
 # read in files
 data_folder = ""
@@ -183,7 +177,6 @@ corpus = train_en + train_de
 bpe_tokenizer = BPETokenizer(corpus, VOCAB_SIZE)
 bpe_tokenizer.train()
 
-
 # write the encode res fro train_en to "../../data/translation/wmt14-en-de/tokenized/train/encoded_train.en"
 # write the encode res fro train_de to "../../data/translation/wmt14-en-de/tokenized/train/encoded_train.de"
 
@@ -198,18 +191,33 @@ if not os.path.exists(os.path.dirname(encoded_train_de_path)):
     os.makedirs(os.path.dirname(encoded_train_de_path))
 
 print("writing encoded train_en and train_de to file")
+tokenized_train_en = []
+
+for sentence in tqdm(train_en):
+    tokenized_train_en.append(" ".join(bpe_tokenizer.encode(sentence)) + "\n")
+
 with open(encoded_train_en_path, "w") as f:
-    for sentence in train_en:
-        f.write(" ".join(bpe_tokenizer.encode(sentence)) + "\n")
+    for sentence in tqdm(tokenized_train_en):
+        f.write(sentence)
 print("finished writing encoded train_en to file")
+print("writing encoded train_de to file")
+tokenized_train_de = []
+# using multiprocessing to speed up the process
+
+
+for sentence in tqdm(train_de):
+    tokenized_train_de.append(" ".join(bpe_tokenizer.encode(sentence)) + "\n")
+
 with open(encoded_train_de_path, "w") as f:
-    for sentence in train_de:
-        f.write(" ".join(bpe_tokenizer.encode(sentence)) + "\n")
+    for sentence in tqdm(tokenized_train_de):
+        f.write(sentence)
+print("finished writing encoded train_de to file")
 
 vocab_path = "tokenized/vocab"
 if not os.path.exists(os.path.dirname(vocab_path)):
     os.makedirs(os.path.dirname(vocab_path))
 print("writing vocab to file")
 with open(vocab_path, "w") as f:
-    for word in bpe_tokenizer.vocab:
+    for word in tqdm(bpe_tokenizer.vocab):
         f.write(word + "\n")
+print("finished writing vocab to file")

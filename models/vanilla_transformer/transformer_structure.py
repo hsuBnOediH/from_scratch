@@ -1,5 +1,8 @@
+import math
+
 import torch
 import torch.nn as nn
+from torch.autograd import Variable
 
 
 class TransformerConfig:
@@ -85,7 +88,6 @@ class ScaledDotProductAttention(nn.Module):
     def __init__(self, config, has_attention_mask=False):
         super().__init__()
         self.d_k = config.d_model // config.num_head
-        self.batch_size = config.batch_size
         self.seq_len = config.seq_len
         self.softmax = nn.Softmax(dim=-1)
         if has_attention_mask:
@@ -94,7 +96,7 @@ class ScaledDotProductAttention(nn.Module):
                 single_head_attention_mask[i, i + 1:] = float('-inf')
             single_head_attention_mask = single_head_attention_mask.unsqueeze(0)
             single_head_attention_mask = single_head_attention_mask.unsqueeze(0)
-            self.attention_mask = single_head_attention_mask.expand(self.batch_size, config.num_head, -1, -1).to(config.device)
+            self.attention_mask = single_head_attention_mask
         else:
             self.attention_mask = None
         self.num_head = config.num_head
@@ -109,9 +111,11 @@ class ScaledDotProductAttention(nn.Module):
         # transpose the multi_head_K
         transpose_multi_head_k = torch.transpose(multi_head_k, -1, -2)
         # multi_head_Q * multi_head_K ^ T
-        multi_head_score = torch.matmul(multi_head_q, transpose_multi_head_k)
+        multi_head_score = torch.matmul(multi_head_q, transpose_multi_head_k)/self.d_k
+
         if self.attention_mask is not None:
-            multi_head_score += self.attention_mask
+            attention_mask = self.attention_mask.to(multi_head_score.device)
+            multi_head_score += attention_mask
 
         if padding_mask is not None:
             padding_mask = padding_mask.unsqueeze(1)
@@ -131,15 +135,14 @@ class ScaledDotProductAttention(nn.Module):
         # transpose multi_head_Z
         transposed_multi_head_z = torch.transpose(multi_head_Z, -2, -3)
         # reshape [bz * seq_len * num_head * d_v]
-        z = transposed_multi_head_z.reshape(self.batch_size, self.seq_len, -1)
+        z = transposed_multi_head_z.reshape( transposed_multi_head_z.size(0), self.seq_len, -1)
         return z
 
 
 class Attention(nn.Module):
     def __init__(self, config, is_decoder=False):
-        super().__init__()
+        super(Attention,self).__init__()
         d_model = config.d_model
-        self.batch_size = config.batch_size
         self.seq_len = config.seq_len
         self.num_head = config.num_head
         self.d_k = config.d_k
@@ -170,13 +173,13 @@ class Attention(nn.Module):
                 v = self.W_v(k_input)
         else:
             v = self.W_v(v_input)
-
-        multi_head_q = q.view(self.batch_size, self.seq_len, self.num_head, self.d_k)
+        cur_batch_size = q.size(0)
+        multi_head_q = q.view(cur_batch_size, self.seq_len, self.num_head, self.d_k)
         multi_head_q = torch.transpose(multi_head_q, -2, -3)
-        multi_head_k = k.view(self.batch_size, self.seq_len, self.num_head, self.d_k)
+        multi_head_k = k.view(cur_batch_size, self.seq_len, self.num_head, self.d_k)
         multi_head_k = torch.transpose(multi_head_k, -2, -3)
 
-        multi_head_v = v.view(self.batch_size, self.seq_len, self.num_head, self.d_k)
+        multi_head_v = v.view(cur_batch_size, self.seq_len, self.num_head, self.d_k)
         multi_head_v = torch.transpose(multi_head_v, -2, -3)
 
         if padding_mask is not None:
@@ -187,11 +190,12 @@ class Attention(nn.Module):
 
 class FeedForwardNetwork(nn.Module):
     def __init__(self, config):
-        super().__init__()
+        super(FeedForwardNetwork,self).__init__()
         hidden_size = config.hidden_size
         d_model = config.d_model
         self.liner1 = nn.Linear(d_model, hidden_size)
         self.liner2 = nn.Linear(hidden_size, d_model)
+        self.dropout = nn.Dropout(config.dropout)
 
     """
     the input of FFN will be the output of attention module, 
@@ -205,13 +209,14 @@ class FeedForwardNetwork(nn.Module):
     def forward(self, x):
         linear_1_res = self.liner1(x)
         active_res = nn.functional.relu(linear_1_res)
-        linear_2_res = self.liner2(active_res)
+        dropout_res = self.dropout(active_res)
+        linear_2_res = self.liner2(dropout_res)
         return linear_2_res
 
 
 class EncoderLayer(nn.Module):
     def __init__(self, config):
-        super().__init__()
+        super(EncoderLayer,self).__init__()
         dropout_rate = config.dropout
         self.multi_head_attention = Attention(config)
         self.feed_forward_layer = FeedForwardNetwork(config)
@@ -348,15 +353,16 @@ class Decoder(nn.Module):
 class EmbeddingLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.batch_size = config.batch_size
         embedding_dim = config.d_model
         vocab_size = config.vocab_size
-        self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.d_model = config.d_model
+
 
     # the input of embedding layer is batch of token id
     # [batch_size * seq_len]
     def forward(self, input):
-        res = self.embedding(input)
+        res = self.embedding(input) * math.sqrt(self.d_model)
         return res
 
 
@@ -388,14 +394,17 @@ class PositionalEncodingLayer(nn.Module):
         # multiply sin_term with factor_0 and cos_term with factor_1
         pos_encoding = sin_term * factor_0 + cos_term * factor_1
         pos_encoding = pos_encoding.unsqueeze(0)
-        self.pos_encoding = pos_encoding.expand(batch_size, -1, -1)
-        self.pos_encoding = self.pos_encoding.to(config.device)
+        pos_encoding = pos_encoding.expand(batch_size, -1, -1)
+        pos_encoding = pos_encoding.to(config.device)
+        self.register_buffer('pos_encoding',pos_encoding)
 
 
     # input is word embedding,
     # [batch_size * seq_len * d_model]
     def forward(self, embedding):
-        return embedding + self.pos_encoding
+        # get the batch size of embedding
+        # and match the pos_encoding batch size
+        return embedding + Variable(self.pos_encoding[:, :embedding.size(1)], requires_grad=False)
 
 
 class Transformer(nn.Module):

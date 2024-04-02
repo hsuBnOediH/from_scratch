@@ -4,7 +4,7 @@ import pickle
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 
-from models.vanilla_transformer.dataloder import WMT14ENDEDataset
+from models.vanilla_transformer.dataloder import WMT14ENDEDataset, WMT14ENDEDatasetHuggingFace
 from models.vanilla_transformer.transformer_structure import TransformerConfig, Transformer
 
 tokenizer_folder = "../../data/translation/wmt14-en-de/tokenized"
@@ -18,7 +18,7 @@ with open(tokenizer_folder + "/id_to_token.pkl", "rb") as f:
 device = torch.device("cuda" if torch.cuda.is_available() else "mps")
 device_type = "cuda" if device.type == "cuda" else "mps"
 
-BATCH_SIZE = 16 if device_type == "mps" else 64
+BATCH_SIZE = 32 if device_type == "mps" else 64
 SEQ_LEN = 64 if device_type == "mps" else 512
 ENCODER_LAYER = 6
 DECODER_LAYER = 6
@@ -27,7 +27,7 @@ HIDDEN_DIM = 512 if device_type == "mps" else 2048
 NUM_HEADS = 8
 DROPOUT = 0.1
 VOCAB_SIZE = len(token_to_id)
-EPOCHS = 10
+EPOCHS = 30
 STEPS = 1000000
 BETA1 = 0.9
 BETA2 = 0.98
@@ -58,10 +58,10 @@ criterion = torch.nn.CrossEntropyLoss()
 
 
 
-wmt14_en_de_tokenizer_dataset = WMT14ENDEDataset(
-    en_token_file_path=tokenizer_folder + "/train/encoded_train.en",
-    de_token_file_path=tokenizer_folder + "/train/encoded_train.de",
-    token_to_id=token_to_id, device=device, max_len=SEQ_LEN)
+wmt14_en_de_tokenizer_dataset = WMT14ENDEDatasetHuggingFace(
+    en_raw_file_path="../../data/translation/wmt14-en-de/raw/train/train.en",
+    de_raw_file_path="../../data/translation/wmt14-en-de/raw/train/train.de",
+    device=device, max_len=SEQ_LEN)
 
 dataloader = DataLoader(wmt14_en_de_tokenizer_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
@@ -92,13 +92,19 @@ for epoch in range(EPOCHS):
     print(f"Epoch: {epoch}, Loss: {epoch_loss/len(dataloader)}")
 
 
-# draw the loss curve for both step and epoch
+# draw two plots, one for the epoch loss and one for the step loss
 import matplotlib.pyplot as plt
+plt.plot(epoch_loss_list)
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.title("Epoch Loss")
+plt.show()
 plt.plot(step_loss_list)
 plt.xlabel("Step")
 plt.ylabel("Loss")
-plt.title("Step Loss Curve")
+plt.title("Step Loss")
 plt.show()
+
 
 
 
