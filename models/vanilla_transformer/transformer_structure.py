@@ -54,7 +54,7 @@ from torch.autograd import Variable
 # res 3.06 --> (escalating  , have no trend to converge)
 
 # 7. change Transformer  model, using gernerator and logsoftmax
-# res
+# res works well, 3.06 --> 2.2
 
 
 
