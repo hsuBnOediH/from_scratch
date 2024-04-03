@@ -51,6 +51,10 @@ from torch.autograd import Variable
 # res 3.06 --> (escalating  , have no trend to converge)
 
 # 6. using the sub connection class from the harvardnlp
+# res 3.06 --> (escalating  , have no trend to converge)
+
+# 7. change Transformer  model, using gernerator and logsoftmax
+# res
 
 
 
@@ -343,28 +347,22 @@ class Decoder(nn.Module):
 
 class Transformer(nn.Module):
     def __init__(self, config):
-        super().__init__()
-        self.embedding_layer = Embeddings(config)
-        self.positional_encoding_layer = PositionalEncoding(config)
+        super(Transformer, self).__init__()
         self.encoder = Encoder(config)
         self.decoder = Decoder(config)
-        self.linear = nn.Linear(config.d_model, config.vocab_size)
-        self.softmax = nn.Softmax(dim=-1)
+        self.embedding = Embeddings(config)
+        self.positional_encoding = PositionalEncoding(config)
+        self.proj = nn.Linear(config.d_model, config.vocab_size)
 
     # input is batch of seq token
     # size [batch_size, seq_len]
     def forward(self, src_input, tgt_input, src_padding_mask=None, tgt_padding_mask=None):
-        src_embedding = self.embedding_layer(src_input)
-        tgt_embedding = self.embedding_layer(tgt_input)
+        src_embedding = self.embedding(src_input)
+        tgt_embedding = self.embedding(tgt_input)
+        src_pe_embedding = self.positional_encoding(src_embedding)
+        tgt_pe_embedding = self.positional_encoding(tgt_embedding)
 
-        # embedding [batch_size, seq_len, d_model]
-        src_pe_embedding = self.positional_encoding_layer(src_embedding)
-        tgt_pe_embedding = self.positional_encoding_layer(tgt_embedding)
-
-        # positional_encoded_embedding [batch_size * seq_len *
-        encoder_output = self.encoder(src_pe_embedding, src_padding_mask)
-        encoder_last_output = encoder_output
-        decoder_output= self.decoder(tgt_pe_embedding,encoder_last_output,src_padding_mask, tgt_padding_mask)
-        decoder_output = self.linear(decoder_output)
-        logits = self.softmax(decoder_output)
+        memory = self.encoder(src_pe_embedding, src_padding_mask)
+        decoder_output = self.decoder(tgt_pe_embedding, memory, src_padding_mask, tgt_padding_mask)
+        logits = F.log_softmax(self.proj(decoder_output), dim=-1)
         return logits
