@@ -1,13 +1,15 @@
 # read in the encoded train_en and train_de from "../../data/translation/wmt14-en-de/tokenized/train/encoded_train.en" and "../../data/translation/wmt14-en-de/tokenized/train/"
+from datetime import time
+
 import torch
 import pickle
 from tqdm import tqdm
 from torch.utils.data import DataLoader
-
+import wandb
 from models.vanilla_transformer.dataloder import WMT14ENDEDataset, WMT14ENDEDatasetHuggingFace
 from models.vanilla_transformer.transformer_structure import TransformerConfig, Transformer
 from models.vanilla_transformer.transformer_structure_harvard import EncoderDecoder
-
+# from models.vanilla_transformer.transformer_structure_debuged import TransformerConfig, Transformer
 tokenizer_folder = "../../data/translation/wmt14-en-de/tokenized"
 
 with open(tokenizer_folder + "/token_to_id.pkl", "rb") as f:
@@ -28,7 +30,7 @@ HIDDEN_DIM = 512 if device_type == "mps" else 2048
 NUM_HEADS = 8
 DROPOUT = 0.1
 VOCAB_SIZE = len(token_to_id)
-EPOCHS = 30
+EPOCHS = 50
 STEPS = 1000000
 BETA1 = 0.9
 BETA2 = 0.98
@@ -36,6 +38,32 @@ EPSILON = 1e-9
 LEARNING_RATE = 0.00001
 WARMUP_STEPS = 4000
 
+wandb.init(
+    # set the wandb project where this run will be logged
+    project="from_scratch_vanilla_transformer_debug",
+
+    # track hyperparameters and run metadata
+    config={
+        "batch_size": BATCH_SIZE,
+        "seq_len": SEQ_LEN,
+        "encoder_layer": ENCODER_LAYER,
+        "decoder_layer": DECODER_LAYER,
+        "d_model": D_MODEL,
+        "hidden_dim": HIDDEN_DIM,
+        "num_heads": NUM_HEADS,
+        "dropout": DROPOUT,
+        "vocab_size": VOCAB_SIZE,
+        "epochs": EPOCHS,
+        "steps": STEPS,
+        "beta1": BETA1,
+        "beta2": BETA2,
+        "epsilon": EPSILON,
+        "learning_rate": LEARNING_RATE,
+        "warmup_steps": WARMUP_STEPS,
+        "device": device.type,
+        "timestamp": time()
+    }
+)
 
 transformer_config = TransformerConfig(
     batch_size=BATCH_SIZE,
@@ -50,7 +78,7 @@ transformer_config = TransformerConfig(
     device=device,
     eps = 1e-6,
 )
-transformer = Transformer(transformer_config)
+transformer = EncoderDecoder(transformer_config)
 transformer.to(device)
 
 # adam with beta1 = 0.9, beta2 = 0.98, epsilon = 1e-9
@@ -91,8 +119,10 @@ for epoch in range(EPOCHS):
         if step == STEPS:
             break
     epoch_loss_list.append(epoch_loss)
-    print(f"Epoch: {epoch}, Loss: {epoch_loss/len(dataloader)}")
 
+    print(f"Epoch: {epoch}, Loss: {epoch_loss/len(dataloader)}")
+    wandb.log({"epoch": epoch, "loss": epoch_loss/len(dataloader)})
+wandb.finish()
 
 # draw two plots, one for the epoch loss and one for the step loss
 import matplotlib.pyplot as plt
