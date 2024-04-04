@@ -10,8 +10,8 @@ from models.vanilla_transformer.dataloder import WMT14ENDEDataset, WMT14ENDEData
 from models.vanilla_transformer.transformer_structure import TransformerConfig, Transformer
 
 
-# REPORT_WANDB = True
-REPORT_WANDB = False
+REPORT_WANDB = True
+# REPORT_WANDB = False
 run_name = "self_implemented_transformer_not_converging"
 
 
