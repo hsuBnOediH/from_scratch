@@ -11,7 +11,7 @@ from models.vanilla_transformer.transformer_structure import TransformerConfig, 
 
 
 REPORT_WANDB = True
-
+# REPORT_WANDB = False
 
 
 
