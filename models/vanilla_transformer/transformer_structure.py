@@ -129,110 +129,36 @@ def scaled_dot_product_attention(q, k, v, mask=None, dropout=None):
         p_attn = dropout(p_attn)
     # return the weighted value and the attention weights
     return torch.matmul(p_attn, v), p_attn
+class MultiHeadAttention(nn.Module):
+    def __init__(self, config):
+        super(MultiHeadAttention, self).__init__()
 
-
-class ScaledDotProductAttention(nn.Module):
-    def __init__(self, config, has_attention_mask=False):
-        super().__init__()
-        self.d_k = config.d_model // config.num_head
-        self.seq_len = config.seq_len
-        self.softmax = nn.Softmax(dim=-1)
-        if has_attention_mask:
-            single_head_attention_mask = torch.zeros(self.seq_len, self.seq_len)
-            for i in range(self.seq_len):
-                single_head_attention_mask[i, i + 1:] = float('-inf')
-            single_head_attention_mask = single_head_attention_mask.unsqueeze(0)
-            single_head_attention_mask = single_head_attention_mask.unsqueeze(0)
-            self.attention_mask = single_head_attention_mask
-        else:
-            self.attention_mask = None
-        self.num_head = config.num_head
-
-    """
-    multi_head_Q [bz * num_head * seq_len * d_q]
-    multi_head_K [bz * num_head * seq_len * d_k]
-    multi_head_V [bz * num_head * seq_len * d_v]
-    """
-
-    def forward(self, multi_head_q, multi_head_k, multi_head_v, padding_mask=None):
-        # transpose the multi_head_K
-        transpose_multi_head_k = torch.transpose(multi_head_k, -1, -2)
-        # multi_head_Q * multi_head_K ^ T
-        multi_head_score = torch.matmul(multi_head_q, transpose_multi_head_k) / self.d_k
-
-        if self.attention_mask is not None:
-            attention_mask = self.attention_mask.to(multi_head_score.device)
-            multi_head_score += attention_mask
-
-        if padding_mask is not None:
-            padding_mask = padding_mask.unsqueeze(1)
-            neg_inf = torch.tensor(float('-inf'))
-            neg_inf = neg_inf.to(padding_mask.device)
-            multi_head_score = torch.where(padding_mask == 1, multi_head_score, neg_inf)
-        # scale
-        d_k = torch.tensor(self.d_k)
-        sqrt_d_k = torch.sqrt(d_k)
-        scaled_multi_head_score = torch.div(multi_head_score, sqrt_d_k)
-        # softmax score
-        softmax_scaled_multi_head_score = self.softmax(scaled_multi_head_score)
-
-        # retrieve Value
-        # [bz * num_head * seq_len * d_v]
-        multi_head_Z = torch.matmul(softmax_scaled_multi_head_score, multi_head_v)
-        # transpose multi_head_Z
-        transposed_multi_head_z = torch.transpose(multi_head_Z, -2, -3)
-        # reshape [bz * seq_len * num_head * d_v]
-        z = transposed_multi_head_z.reshape(transposed_multi_head_z.size(0), self.seq_len, -1)
-        return z
-
-
-class Attention(nn.Module):
-    def __init__(self, config, is_decoder=False):
-        super(Attention,self).__init__()
-        d_model = config.d_model
-        self.seq_len = config.seq_len
-        self.num_head = config.num_head
         self.d_k = config.d_k
-        self.W_q = nn.Linear(d_model, d_model)
-        self.W_k = nn.Linear(d_model, d_model)
-        self.W_v = nn.Linear(d_model, d_model)
-        if is_decoder:
-            self.scored_dot_product_att = ScaledDotProductAttention(config, has_attention_mask=True)
-        else:
-            self.scored_dot_product_att = ScaledDotProductAttention(config)
+        self.num_head = config.num_head
+        self.d_model = config.d_model
+        self.linears = clones(nn.Linear(config.d_model, config.d_model), 4)
+        self.dropout = nn.Dropout(p=config.dropout)
+        self.seq_len = config.seq_len
+        # todo
+        self.attn = None
 
-    def forward(self, q_input=None, k_input=None, v_input=None, padding_mask=None):
-        if q_input is None:
-            # error handling
-            raise ValueError(" For Attention module, at least one of q_input should be provided")
-        # x [batch_size, seq_len, d_model]
-        # q, k, v [batch_size,seq_len,d_model]
-        q = self.W_q(q_input)
-        if k_input is None:
-            k = self.W_k(q_input)
-        else:
-            k = self.W_k(k_input)
+    def forward(self, query, key, value, mask=None):
+        if mask is not None:
+            # TODO
+            mask = mask.unsqueeze(1)
+            mask = mask.unsqueeze(-1)
+        num_batch = query.size(0)
 
-        if v_input is None:
-            if k_input is None:
-                v = self.W_v(q_input)
-            else:
-                v = self.W_v(k_input)
-        else:
-            v = self.W_v(v_input)
-        cur_batch_size = q.size(0)
-        multi_head_q = q.view(cur_batch_size, self.seq_len, self.num_head, self.d_k)
-        multi_head_q = torch.transpose(multi_head_q, -2, -3)
-        multi_head_k = k.view(cur_batch_size, self.seq_len, self.num_head, self.d_k)
-        multi_head_k = torch.transpose(multi_head_k, -2, -3)
+        query, key, value = [l(x).view(num_batch, -1, self.num_head, self.d_k).transpose(1, 2) for l, x in
+                             zip(self.linears, (query, key, value))]
+        x, self.attn = scaled_dot_product_attention(query, key, value, mask=mask, dropout=self.dropout)
+        # if the transpose is in place, the raw data(1-dimensional) won't be changed
+        # only the meta data will be changed, the data_ptr is the same
+        # only use contiguous() to make sure the raw data is changed
+        x = x.transpose(1, 2).contiguous().view(num_batch, -1, self.d_model)
+        # according to the paper, the output of multi head attention will be passed through a linear layer
+        return self.linears[-1](x)
 
-        multi_head_v = v.view(cur_batch_size, self.seq_len, self.num_head, self.d_k)
-        multi_head_v = torch.transpose(multi_head_v, -2, -3)
-
-        if padding_mask is not None:
-            padding_mask = padding_mask.unsqueeze(1)
-        output = self.scored_dot_product_att(multi_head_q, multi_head_k, multi_head_v, padding_mask)
-        return output
 
 
 
