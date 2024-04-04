@@ -209,6 +209,7 @@ class PositionwiseFeedForward(nn.Module):
     """
 
     def forward(self, x):
+
         return self.w_2(self.dropout(F.relu(self.w_1(x))))
 
 
@@ -350,7 +351,7 @@ class Generator(nn.Module):
         self.proj = nn.Linear(config.d_model, config.vocab_size)
 
     def forward(self, x):
-        return F.log_softmax(self.proj(x), dim=-1)
+       return F.log_softmax(self.proj(x), dim=-1)
 class EncoderDecoder(nn.Module):
     def __init__(self, config):
         super(EncoderDecoder, self).__init__()
