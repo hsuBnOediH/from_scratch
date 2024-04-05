@@ -1,5 +1,8 @@
 # read in the encoded train_en and train_de from "../../data/translation/wmt14-en-de/tokenized/train/encoded_train.en" and "../../data/translation/wmt14-en-de/tokenized/train/"
+import random
 from datetime import time
+
+import numpy as np
 import torch
 import pickle
 from tqdm import tqdm
@@ -29,8 +32,8 @@ device_type = "cuda" if device.type == "cuda" else "mps"
 
 BATCH_SIZE = 32 if device_type == "mps" else 64
 SEQ_LEN = 64 if device_type == "mps" else 512
-ENCODER_LAYER = 6
-DECODER_LAYER = 6
+ENCODER_LAYER_NUM = 6
+DECODER_LAYER_NUM = 6
 D_MODEL = 256 if device_type == "mps" else 512
 HIDDEN_DIM = 512 if device_type == "mps" else 2048
 NUM_HEADS = 8
@@ -44,6 +47,11 @@ EPSILON = 1e-9
 LEARNING_RATE = 0.00001
 WARMUP_STEPS = 4000
 
+seed_value = 42
+torch.manual_seed(seed_value)
+random.seed(seed_value)
+np.random.seed(seed_value)
+
 if REPORT_WANDB:
 
     wandb.init(
@@ -55,8 +63,8 @@ if REPORT_WANDB:
         config={
             "batch_size": BATCH_SIZE,
             "seq_len": SEQ_LEN,
-            "encoder_layer": ENCODER_LAYER,
-            "decoder_layer": DECODER_LAYER,
+            "encoder_layer_num": ENCODER_LAYER_NUM,
+            "decoder_layer_num": DECODER_LAYER_NUM,
             "d_model": D_MODEL,
             "hidden_dim": HIDDEN_DIM,
             "num_heads": NUM_HEADS,
@@ -77,11 +85,11 @@ if REPORT_WANDB:
 transformer_config = TransformerConfig(
     batch_size=BATCH_SIZE,
     seq_len=SEQ_LEN,
-    encoder_layer=ENCODER_LAYER,
-    decoder_layer=DECODER_LAYER,
+    encoder_layer_num=ENCODER_LAYER_NUM,
+    decoder_layer_num=DECODER_LAYER_NUM,
     d_model=D_MODEL,
-    hidden_size=HIDDEN_DIM,
-    num_head=NUM_HEADS,
+    d_ff=HIDDEN_DIM,
+    num_heads=NUM_HEADS,
     dropout=DROPOUT,
     vocab_size=VOCAB_SIZE,
     device=device,

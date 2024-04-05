@@ -1,8 +1,10 @@
 import copy
+import math
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.autograd import Variable
 
 
 class TransformerConfig:
@@ -19,8 +21,11 @@ class TransformerConfig:
                  batch_size: int = 16,
                  seq_len: int = 256,
                  d_ff: int = 2048,
-                 vocab_size=37000,
-                 device="cuda"
+                 vocab_size: int = 37000,
+                 device: str = "cuda",
+                 encoder_layer_num: int = 6,
+                 decoder_layer_num: int = 6,
+                 eps: float = 1e-6
                  ):
         # the main model size of the transformer model, in the whole model,  we will use d_model number vector to
         # represent meaning of the word (the location of this word in the word embedding space)
@@ -46,6 +51,9 @@ class TransformerConfig:
         # indicate where the whole model will be running, all the tensor involved in the computation need to be moved
         # on the same device
         self.device = device
+        self.encoder_layer_num = encoder_layer_num
+        self.decoder_layer_num = decoder_layer_num
+        self.eps = eps
 
 
 def clone(component: nn.Module, num_of_copy: int) -> nn.ModuleList:
@@ -75,7 +83,7 @@ class MultiHeadAttention(nn.Module):
         # split the d_model evenly into heads
         self.d_model = config.d_model
         self.num_heads = config.num_heads
-        assert self.d_model // self.num_heads == 0, "the number of head need to be divided by d_model"
+        assert self.d_model % self.num_heads == 0, "the number of head need to be divided by d_model"
         # this linear nn.ModuleList contains the W_q,W_k,W_v,W_o. All of them have the same size the purpose the W_q,
         # W_k,W_v is for projection. to do the scale dot-production attention, we have to use query(q) * key(k) to
         # get score between q and k then use the score as weight to retrieve info from the v, but there is an issue,
@@ -89,9 +97,10 @@ class MultiHeadAttention(nn.Module):
         self.linears = clone(nn.Linear(self.d_model, self.d_model), 4)
         self.dropout = nn.Dropout(p=config.dropout)
         self.seq_len = config.seq_len
+        self.d_k = self.d_model // self.num_heads
 
     def _scaled_dot_product(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                            mask: torch.Tensoe, dropout: nn.Dropout) -> torch.Tensor:
+                            mask: torch.Tensor, dropout: nn.Dropout) -> torch.Tensor:
         """
         this function will actually do the scaled dot product mentioned in equation (1)
         for this function, all q k v need to be prepared, which it has already been split into head dim
@@ -103,14 +112,14 @@ class MultiHeadAttention(nn.Module):
         :param dropout: the dropout defined in the outer layer
         :return: the scaled dot-product result [batch_size * num_heads * seq_len * d_k]
         """
-        score = (q @ k.transpose(-2, -1)) / torch.sqrt(self.d_k)
-
-        if mask:
+        d_k = q.size(-1)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
+        if mask is not None:
             # TODO explain the mask fill and why there is a small value
-            score.masked_fill(mask == 0, 1e-9)
-        score = F.softmax(score, dim=-1)
+            scores = scores.masked_fill_(mask == 0, -1e9)
+        scores = F.softmax(scores, dim=-1)
         # TODO explain why dropout before
-        return dropout(score) @ v
+        return torch.matmul(scores, v)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         """
@@ -131,25 +140,30 @@ class MultiHeadAttention(nn.Module):
         # padding. in order to use it, mask_fill the score, it has to meet the requirement of broadcasting with score
         # since the dim of score is [batch_size * num_heads * seq_len * d_k], the mask has to un-squeeze at dim 1 and
         # dim -1
-        if mask:
-            mask.unsqueeze(1)
-            mask.unsqueeze(-1)
+        if mask is not None:
+            mask = mask.unsqueeze(1).unsqueeze(-1)
+
+        query, key, value = [l(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2) for l, x in
+                             zip(self.linears, (q, k, v))]
+        x =self._scaled_dot_product(query, key, value, mask=mask, dropout=self.dropout)
         # project the input q,k,v into according space to get actual query, key and value
-        q_k_v = [w(mat) for mat, w in zip([q, k, v], self.linears)]
+        # q, k, v = [w(mat) for mat, w in zip([q, k, v], self.linears)]
         # reshape the q , k  and v to into heads, constitute the multi head
-        q_k_v = [mat.view(batch_size, self.seq_len, self.num_heads, -1) for mat in q_k_v]
+        # q, k, v = [mat.view(batch_size, self.seq_len, self.num_heads, -1) for mat in [q, k, v]]
         # transpose the number since the matmul only work on last two dim, to calculate the attention, we want to
         # compute q [...... seq_len * d_q] * k [..... d_k, seq_len]
         # after reshaping, the dim is [batch_size * seq_len, num_heads, d_k]
         # so dim 1 and dim 2 need to transpose
-        q_k_v = [torch.transpose(mat, 1, 2) for mat in q_k_v]
+        # q, k, v = [torch.transpose(mat, 1, 2) for mat in [q, k, v]]
         # after everything be prepared, the scaled dot-product will be conducted.
         # the output of that func is split into head, we need transpose the dim back and reshape the same dim
         # as the input, so in the transformer the following identical layer could keeping do the same attention
         # operation again and again
 
+        x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
         # TODO why need contiguous()
-        x = self._scaled_dot_product(*q_k_v).transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
+        # x = (self._scaled_dot_product(q=q, k=k, v=v, mask=mask, dropout=self.dropout)
+        #      .transpose(1, 2).contiguous().view(batch_size, -1, self.d_model))
         return self.linears[-1](x)
 
 
@@ -184,11 +198,11 @@ class Embedding(nn.Module):
     def __init__(self, config: TransformerConfig):
         super(Embedding, self).__init__()
         self.embedding = nn.Embedding(config.vocab_size, config.d_model)
-        self.d_model = torch.tensor(self.d_model).to(config.device)
+        self.d_model = torch.tensor(config.d_model).to(config.device)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         #  todo explain  the sqrt in the embedding layer
-        return self.embedding(x) / torch.sqrt(self.d_model)
+        return self.embedding(x) * torch.sqrt(self.d_model)
 
 
 class PositionalEmbedding(nn.Module):
@@ -196,10 +210,35 @@ class PositionalEmbedding(nn.Module):
     Todo
     """
 
-    def __init__(self, config):
+    def __init__(self, config: TransformerConfig):
         super(PositionalEmbedding, self).__init__()
         # todo
-        self.pe = None
+        self.dropout = nn.Dropout(p=config.dropout)
+        pe = torch.zeros(config.seq_len, config.d_model)
+        position = torch.arange(0, config.seq_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, config.d_model, 2) * -(math.log(10000.0) / config.d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer('pe', pe)
+
+    def forward(self, embedding: torch.Tensor) -> torch.Tensor:
+        """
+
+        :param x:
+        :return:
+        """
+        x = embedding + Variable(self.pe[:, :embedding.size(1)], requires_grad=False)
+        return self.dropout(x)
+
+
+class LayerNorm(nn.Module):
+
+    def __init__(self, config: TransformerConfig):
+        super(LayerNorm, self).__init__()
+        self.one_mat = nn.Parameter(torch.ones(config.d_model))
+        self.zero_mat = nn.Parameter(torch.zeros(config.d_model))
+        self.eps = config.eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -207,30 +246,99 @@ class PositionalEmbedding(nn.Module):
         :param x:
         :return:
         """
-        batch_size = x.size(0)
-        return x + self.pe[:batch_size]
 
-
-
-class LayerNorm(nn.Module):
-
-
-
+        mean = x.mean(dim=-1, keepdim=True)
+        std = x.mean(dim=-1, keepdim=True)
+        return self.one_mat * (x - mean) / (std + self.eps) + self.zero_mat
 
 
 class Sublayer(nn.Module):
 
+    def __init__(self, config: TransformerConfig):
+        super(Sublayer, self).__init__()
+        self.norm = LayerNorm(config)
+        self.dropout = nn.Dropout(p=config.dropout)
+
+    def forward(self, x: torch.Tensor, module: nn.Module) -> torch.Tensor:
+        return self.dropout(module(self.norm(x))) + x
 
 
 class EncoderLayer(nn.Module):
 
+    def __init__(self, config: TransformerConfig):
+        super(EncoderLayer, self).__init__()
+        self.self_attention = MultiHeadAttention(config)
+        self.ffn = FeedForward(config)
+        self.sublayers = clone(Sublayer(config), 2)
+
+    def forward(self, x: torch.Tensor, src_masking: torch.Tensor) -> torch.Tensor:
+        x = self.sublayers[0](x, lambda x: self.self_attention(x, x, x, src_masking))
+        x = self.sublayers[1](x, self.ffn)
+        return x
+
 
 class Encoder(nn.Module):
 
+    def __init__(self, config: TransformerConfig):
+        super(Encoder, self).__init__()
+        self.encoder_layer_list = clone(EncoderLayer(config), config.encoder_layer_num)
+        self.norm = LayerNorm(config)
+
+    def forward(self, x: torch.Tensor, src_masking: torch.Tensor) -> torch.Tensor:
+        for encoder_layer in self.encoder_layer_list:
+            x = encoder_layer(x, src_masking)
+        return self.norm(x)
+
 
 class DecoderLayer(nn.Module):
+    def __init__(self, config: TransformerConfig):
+        super(DecoderLayer, self).__init__()
+        self.self_attention = MultiHeadAttention(config)
+        self.cross_attention = MultiHeadAttention(config)
+        self.ffn = FeedForward(config)
+        self.sublayers = clone(Sublayer(config), 3)
+
+    def forward(self, memory: torch.Tensor, x: torch.Tensor, src_masking: torch.Tensor,
+                tgt_masking: torch.Tensor) -> torch.Tensor:
+        x = self.sublayers[0](x, lambda x: self.self_attention(x, x, x, tgt_masking))
+        x = self.sublayers[1](x, lambda x: self.cross_attention(x, memory, memory, src_masking))
+        x = self.sublayers[2](x, self.ffn)
+        return x
 
 
 class Decoder(nn.Module):
 
-class Transformer(nn.Module)
+    def __init__(self, config: TransformerConfig):
+        super(Decoder, self).__init__()
+        self.decoder_layer_list = clone(DecoderLayer(config), config.decoder_layer_num)
+        self.norm = LayerNorm(config)
+
+    def forward(self, memory:torch.Tensor, x: torch.Tensor,
+                src_masking: torch.Tensor, tgt_masking:torch.Tensor) -> torch.Tensor:
+        for decoder_layer in self.decoder_layer_list:
+            x = decoder_layer(memory, x, src_masking, tgt_masking)
+        return self.norm(x)
+
+
+class Transformer(nn.Module):
+
+    def __init__(self, config: TransformerConfig):
+        super(Transformer, self).__init__()
+        self.embedding = Embedding(config)
+        self.pe = PositionalEmbedding(config)
+        self.encoder = Encoder(config)
+        self.decoder = Decoder(config)
+        self.linear = nn.Linear(config.d_model, config.vocab_size)
+
+    def forward(self, src_x: torch.Tensor, tgt_x: torch.Tensor,
+                src_masking: torch.Tensor, tgt_masking: torch.Tensor) -> torch.Tensor:
+        src_embedding = self.embedding(src_x)
+        tgt_embedding = self.embedding(tgt_x)
+        src_pe = self.pe(src_embedding)
+        tgt_pe = self.pe(tgt_embedding)
+
+        memory = self.encoder(src_pe, src_masking)
+        output = self.decoder(memory, tgt_pe, src_masking, tgt_masking)
+
+        logits = F.log_softmax(self.linear(output),dim=-1)
+        return logits

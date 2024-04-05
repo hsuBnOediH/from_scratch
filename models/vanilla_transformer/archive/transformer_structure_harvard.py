@@ -252,6 +252,7 @@ class PositionalEncoding(nn.Module):
 class LayerNorm(nn.Module):
     def __init__(self, config):
         super(LayerNorm, self).__init__()
+
         self.a_2 = nn.Parameter(torch.ones(config.d_model))
         self.b_2 = nn.Parameter(torch.zeros(config.d_model))
         self.eps = config.eps
