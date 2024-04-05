@@ -248,7 +248,7 @@ class LayerNorm(nn.Module):
         """
 
         mean = x.mean(dim=-1, keepdim=True)
-        std = x.mean(dim=-1, keepdim=True)
+        std = x.std(dim=-1, keepdim=True)
         return self.one_mat * (x - mean) / (std + self.eps) + self.zero_mat
 
 

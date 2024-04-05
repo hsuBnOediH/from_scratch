@@ -13,21 +13,22 @@ def clones(module, N):
 
 class TransformerConfig:
     def __init__(self, batch_size, seq_len=256,
-                 encoder_layer=6, decoder_layer=6, d_model=512, num_head=8,
-                 hidden_size=2048, dropout=0.1, vocab_size=50000, device="cpu"):
+                 encoder_layer_num=6, decoder_layer_num=6, d_model=512, num_heads=8,
+                 d_ff=2048, dropout=0.1, vocab_size=50000, device="cpu", eps=1e-9):
         self.batch_size = batch_size
-        self.encoder_layer = encoder_layer
-        self.decoder_layer = decoder_layer
+        self.encoder_layer = encoder_layer_num
+        self.decoder_layer = decoder_layer_num
         self.d_model = d_model
-        self.num_head = num_head
+        self.num_head = num_heads
         self.seq_len = seq_len
-        self.hidden_size = hidden_size
+        self.hidden_size = d_ff
         self.dropout = dropout
-        self.d_k = d_model // num_head
+        self.d_k = d_model // num_heads
         self.vocab_size = vocab_size
         self.device = device
+        self.eps = eps
 
-        assert d_model % num_head == 0, "d_model should be divided by num_head "
+        assert d_model % num_heads == 0, "d_model should be divided by num_head "
 
 
 """
