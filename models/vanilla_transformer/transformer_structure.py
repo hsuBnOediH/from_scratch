@@ -216,3 +216,21 @@ class LayerNorm(nn.Module):
 
 
 
+
+
+class Sublayer(nn.Module):
+
+
+
+class EncoderLayer(nn.Module):
+
+
+class Encoder(nn.Module):
+
+
+class DecoderLayer(nn.Module):
+
+
+class Decoder(nn.Module):
+
+class Transformer(nn.Module)
