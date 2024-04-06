@@ -261,6 +261,14 @@ def compute_bleu(reference_corpus, translation_corpus, max_order=4,
                     precision[i] = 0
 
         if min(precision) > 0:
+            # the reason using geometric mean is that the n-gram precision is highly correlated
+            # if they are independent, then we could use the arithmetic mean, but if the triple-gram precision is high,
+            # then the bigram precision will be high, so we have to use the geometric mean
+
+            # but using geometric mean will make the result underflow, since the precision is between 0 and 1
+            # we will multiply a number between 0 and 1 multiple times, the result will be really small
+            # so we have to use the log to avoid the underflow
+            # and at the end, we have to use exp to get the final result back, since log then exp will cancel each other
             p_log_sum = sum((1 / max_order) * math.log(p) for p in precision)
             geo_mean = math.exp(p_log_sum)
         else:
