@@ -144,20 +144,26 @@ for epoch in range(EPOCHS):
 if REPORT_WANDB:
     wandb.finish()
 
-# draw two plots, one for the epoch loss and one for the step loss
-import matplotlib.pyplot as plt
-plt.plot(epoch_loss_list)
-plt.xlabel("Epoch")
-plt.ylabel("Loss")
-plt.title("Epoch Loss")
-plt.show()
-plt.plot(step_loss_list)
-plt.xlabel("Step")
-plt.ylabel("Loss")
-plt.title("Step Loss")
-plt.show()
 
-
+# evaluate the model using bleu score
+transformer.eval()
+test_dataset = WMT14ENDEDatasetHuggingFace(
+    en_raw_file_path="../../data/translation/wmt14-en-de/raw/test/test.en",
+    de_raw_file_path="../../data/translation/wmt14-en-de/raw/test/test.de",
+    device=device, max_len=SEQ_LEN)
+test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
+test_loss = 0
+for step, data in tqdm(enumerate(test_dataloader), total=len(test_dataloader)):
+    # get the batch
+    batch_en_tensor = data["en_input_ids"]
+    batch_de_tensor = data["de_input_ids"]
+    padding_mask_en_tensor = data["en_padding_mask"]
+    padding_mask_de_tensor = data["de_padding_mask"]
+    # forward pass
+    logit = transformer(batch_en_tensor, batch_de_tensor, padding_mask_en_tensor, padding_mask_de_tensor)
+    loss = criterion(logit.view(-1, VOCAB_SIZE), batch_de_tensor.view(-1))
+    test_loss += loss.item()
+print(f"Test Loss: {test_loss/len(test_dataloader)}")
 
 
 
