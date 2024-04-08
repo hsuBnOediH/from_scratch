@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 import wandb
 
 from models.vanilla_transformer.dataloder import WMT14ENDEDataset, WMT14ENDEDatasetHuggingFace
+from models.vanilla_transformer.eval.blue import compute_bleu
 from models.vanilla_transformer.transformer_structure import TransformerConfig, Transformer
 
 
@@ -148,22 +149,27 @@ if REPORT_WANDB:
 # evaluate the model using bleu score
 transformer.eval()
 test_dataset = WMT14ENDEDatasetHuggingFace(
-    en_raw_file_path="../../data/translation/wmt14-en-de/raw/test/test.en",
-    de_raw_file_path="../../data/translation/wmt14-en-de/raw/test/test.de",
+    en_raw_file_path="../../data/translation/wmt14-en-de/raw/test/newstest2012.en",
+    de_raw_file_path="../../data/translation/wmt14-en-de/raw/test/newstest2012.de",
     device=device, max_len=SEQ_LEN)
 test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
-test_loss = 0
+
+ref_sents_list = []
+pred_sents_list = []
+tokenizer = wmt14_en_de_tokenizer_dataset.tokenizer
 for step, data in tqdm(enumerate(test_dataloader), total=len(test_dataloader)):
-    # get the batch
     batch_en_tensor = data["en_input_ids"]
     batch_de_tensor = data["de_input_ids"]
     padding_mask_en_tensor = data["en_padding_mask"]
     padding_mask_de_tensor = data["de_padding_mask"]
-    # forward pass
     logit = transformer(batch_en_tensor, batch_de_tensor, padding_mask_en_tensor, padding_mask_de_tensor)
-    loss = criterion(logit.view(-1, VOCAB_SIZE), batch_de_tensor.view(-1))
-    test_loss += loss.item()
-print(f"Test Loss: {test_loss/len(test_dataloader)}")
+    pred_sents = torch.argmax(logit, dim=-1)
+    pred_sents_list.append(tokenizer.decode(pred_sents))
+    ref_sents_list.append(batch_de_tensor)
+    pred_sents_list.append(pred_sents)
+    ref_sents_list.append(batch_de_tensor)
+blue_score = compute_bleu(ref_sents_list, pred_sents_list, smooth=True, max_order=4)
+print(f"BLEU Score: {blue_score}")
 
 
 
