@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from typing import List, Optional, Tuple, Union
 
+
 class TransformerConfig:
     """
     The config class is an easy way to parse those hyper params into model
@@ -81,8 +82,10 @@ def _get_padding_mask(attention_mask: torch.Tensor, dtype: torch.dtype) -> torch
     attention_mask = 1.0 - attention_mask
     attention_mask = attention_mask.masked_fill(attention_mask.to(torch.bool), torch.finfo(dtype).min)
     return attention_mask
-def _get_causal_mask(attention_mask: torch.Tensor, input_shape: Tuple[int, int], inputs_embeds: torch.Tensor,
-                    ) -> torch.Tensor:
+
+
+def _get_causal_mask(attention_mask: torch.Tensor, input_shape: Tuple[int, int], dtype: torch.dtype,
+                     ) -> torch.Tensor:
     """
     The causal mask is used in decoder, the mask is used to prevent the model to look ahead the future token
     :param attention_mask:
@@ -100,7 +103,7 @@ def _get_causal_mask(attention_mask: torch.Tensor, input_shape: Tuple[int, int],
     # 4d mask is passed through the layers
     # if the attention_mask is 2D,
 
-    input_shape = (attention_mask.shape[0],  input_shape[-1])
+    input_shape = (attention_mask.shape[0], input_shape[-1])
 
     # create causal mask
     # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
@@ -109,32 +112,32 @@ def _get_causal_mask(attention_mask: torch.Tensor, input_shape: Tuple[int, int],
         if key_value_length is None:
             raise ValueError(
                 "This attention mask converter is causal. Make sure to pass `key_value_length` to correctly create a causal mask."
-         )
+            )
 
         bsz, tgt_len = input_shape
-        mask = torch.full((tgt_len, tgt_len), torch.finfo(inputs_embeds.dtype).min, device=attention_mask.device)
+        # create a mat that have the same size as attention weight
+        mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device=attention_mask.device)
+        # rang a one dim mat only on conditional
         mask_cond = torch.arange(mask.size(-1), device=attention_mask.device)
         mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
 
-        mask = mask.to(inputs_embeds.dtype)
+        mask = mask.to(dtype)
 
-        causal_4d_mask =  mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len)
+        causal_4d_mask = mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len)
 
         # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
 
-
-        bsz, src_len = mask.size()
+        bsz, src_len = attention_mask.size()
         tgt_len = tgt_len if tgt_len is not None else src_len
 
-        expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(inputs_embeds.dtype)
+        expanded_mask = attention_mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
 
         inverted_mask = 1.0 - expanded_mask
 
-        expanded_attn_mask =  inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(inputs_embeds.dtype).min)
-
+        expanded_attn_mask = inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
         if causal_4d_mask is not None:
-            expanded_attn_mask = causal_4d_mask.masked_fill(expanded_attn_mask.bool(), torch.finfo(inputs_embeds.dtype).min)
+            expanded_attn_mask = causal_4d_mask.masked_fill(expanded_attn_mask.bool(), torch.finfo(dtype).min)
 
         # expanded_attn_mask + causal_4d_mask can cause some overflow
         expanded_4d_mask = expanded_attn_mask
@@ -149,7 +152,7 @@ class MultiHeadAttention(nn.Module):
     Head
     """
 
-    def __init__(self, config: TransformerConfig):
+    def __init__(self, config: TransformerConfig, is_cross: bool = False):
 
         super(MultiHeadAttention, self).__init__()
         # since those head are doing the attention operation at the same time, we better put them in a same matrix
@@ -173,6 +176,7 @@ class MultiHeadAttention(nn.Module):
         self.dropout = nn.Dropout(p=config.dropout)
         self.seq_len = config.seq_len
         self.d_k = self.d_model // self.num_heads
+        self.is_cross = is_cross
 
     def _scaled_dot_product(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                             mask: torch.Tensor, dropout: nn.Dropout) -> torch.Tensor:
@@ -197,7 +201,7 @@ class MultiHeadAttention(nn.Module):
         return torch.matmul(scores, v)
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                mask: torch.Tensor = None, is_decoder:bool = False) -> torch.Tensor:
+                mask: torch.Tensor = None) -> torch.Tensor:
         """
         this function implement the function in section 3.2.2
         :param q:[batch_size * seq_len * d_model]
@@ -218,18 +222,20 @@ class MultiHeadAttention(nn.Module):
         # since the dim of score is [batch_size * num_heads * seq_len * d_k], the mask has to un-squeeze at dim 1 and
         # dim -1
         if mask is not None:
-            if is_decoder:
+            if self.is_cross:
                 # get the causal mask, the mask is used to prevent the model to look ahead the future token
                 # the dim of the mask is already [ 1 * 1 * seq_len * seq_len]
-                mask = _get_causal_mask(mask, self.seq_len)
+                mask = _get_causal_mask(attention_mask=mask,
+                                        input_shape = mask.size(),
+                                        dtype=q.dtype)
             else:
                 # the mask is used to prevent the model to look at the padding token
                 # the dim of the mask is already [batch_size * 1 * seq_len * 1]
-                mask = _get_padding_mask( attention_mask =mask, dtype=q.dtype)
+                mask = _get_padding_mask(attention_mask=mask, dtype=q.dtype)
 
         query, key, value = [l(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2) for l, x in
                              zip(self.linears, (q, k, v))]
-        x =self._scaled_dot_product(query, key, value, mask=mask, dropout=self.dropout)
+        x = self._scaled_dot_product(query, key, value, mask=mask, dropout=self.dropout)
         # project the input q,k,v into according space to get actual query, key and value
         # q, k, v = [w(mat) for mat, w in zip([q, k, v], self.linears)]
         # reshape the q , k  and v to into heads, constitute the multi head
@@ -378,7 +384,7 @@ class DecoderLayer(nn.Module):
     def __init__(self, config: TransformerConfig):
         super(DecoderLayer, self).__init__()
         self.self_attention = MultiHeadAttention(config)
-        self.cross_attention = MultiHeadAttention(config)
+        self.cross_attention = MultiHeadAttention(config, is_cross=True)
         self.ffn = FeedForward(config)
         self.sublayers = clone(Sublayer(config), 3)
 
@@ -397,8 +403,8 @@ class Decoder(nn.Module):
         self.decoder_layer_list = clone(DecoderLayer(config), config.decoder_layer_num)
         self.norm = LayerNorm(config)
 
-    def forward(self, memory:torch.Tensor, x: torch.Tensor,
-                src_masking: torch.Tensor, tgt_masking:torch.Tensor) -> torch.Tensor:
+    def forward(self, memory: torch.Tensor, x: torch.Tensor,
+                src_masking: torch.Tensor, tgt_masking: torch.Tensor) -> torch.Tensor:
         for decoder_layer in self.decoder_layer_list:
             x = decoder_layer(memory, x, src_masking, tgt_masking)
         return self.norm(x)
@@ -424,20 +430,19 @@ class Transformer(nn.Module):
         memory = self.encoder(src_pe, src_masking)
         output = self.decoder(memory, tgt_pe, src_masking, tgt_masking)
 
-        logits = F.log_softmax(self.linear(output),dim=-1)
+        logits = F.log_softmax(self.linear(output), dim=-1)
         return logits
 
 
-
 def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
-        """
+    """
         Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`.
         """
-        bsz, src_len = mask.size()
-        tgt_len = tgt_len if tgt_len is not None else src_len
+    bsz, src_len = mask.size()
+    tgt_len = tgt_len if tgt_len is not None else src_len
 
-        expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
+    expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
 
-        inverted_mask = 1.0 - expanded_mask
+    inverted_mask = 1.0 - expanded_mask
 
-        return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
+    return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
