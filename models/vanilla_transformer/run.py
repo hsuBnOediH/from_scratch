@@ -27,8 +27,28 @@ check_point_folfer_path = "checkpoint/"
 #     id_to_token = pickle.load(f)
 # convert the encoded train_en and train_de to id
 
-device = torch.device("cuda" if torch.cuda.is_available() else "mps")
-device_type = "cuda" if device.type == "cuda" else "mps"
+# check if is a linux system or mac system
+is_linux = False
+import platform
+import os
+import sys
+if platform.system() == "Linux":
+    is_linux = True
+elif platform.system() == "Darwin":
+    is_linux = False
+else:
+    print("The system is not supported")
+    sys.exit(1)
+
+device = "cpu"
+device_type = "cpu"
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+    device_type = "cuda"
+elif not is_linux:
+    device = torch.device("mps")
+    device_type = "mps"
+
 
 BATCH_SIZE = 32 if device_type == "mps" else 64
 SEQ_LEN = 64 if device_type == "mps" else 512
