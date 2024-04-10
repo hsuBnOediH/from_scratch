@@ -196,8 +196,6 @@ class MultiHeadAttention(nn.Module):
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
         if mask is not None:
             # TODO explain the mask fill and why there is a small value
-            # print(f"mask shape: {mask.shape}")
-            # print(f"score shape: {scores.shape}")
             scores = scores + mask
         scores = F.softmax(scores, dim=-1)
         # TODO explain why dropout before
@@ -403,7 +401,7 @@ class DecoderLayer(nn.Module):
         if self.training:
             x = self.sublayers[1](x, lambda x: self.cross_attention(x, memory, memory, src_masking))
         else:
-            x = self.sublayers[1](x, lambda x: self.cross_attention(x, memory, memory, tgt_masking))
+            x = self.sublayers[1](x, lambda x: self.cross_attention(x, memory, memory, src_masking))
         x = self.sublayers[2](x, self.ffn)
         return x
 

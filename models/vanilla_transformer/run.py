@@ -56,7 +56,7 @@ ENCODER_LAYER_NUM = 6
 DECODER_LAYER_NUM = 6
 D_MODEL = 256 if device_type == "mps" else 512
 HIDDEN_DIM = 512 if device_type == "mps" else 2048
-NUM_HEADS = 4
+NUM_HEADS = 8
 DROPOUT = 0.1
 # VOCAB_SIZE = len(token_to_id)
 VOCAB_SIZE = 50256
@@ -185,9 +185,10 @@ def transfomer_inference(batch_src_tensor, padding_mask_src_tensor, max_len=SEQ_
         logit = transformer(batch_src_tensor, tgt_tensor, padding_mask_src_tensor, tgt_mask)
         logit = torch.softmax(logit, dim=-1)
         pred_sents_ids = torch.argmax(logit, dim=-1)
-        tgt_tensor = torch.cat([tgt_tensor, pred_sents_ids], dim=-1)
+        # append the last token of the pred_sents_ids to the tgt_tensor
+        tgt_tensor = torch.cat([tgt_tensor, pred_sents_ids[:, -1].unsqueeze(-1)], dim=-1)
         tgt_mask = torch.ones_like(tgt_tensor)
-        if pred_sents_ids[-1] == tokenizer.eos_token_id:
+        if pred_sents_ids[-1][-1] == tokenizer.eos_token_id:
             break
     return tgt_tensor
 
@@ -199,7 +200,8 @@ test_dataset = WMT14ENDEDatasetHuggingFace(
     en_raw_file_path="../../data/translation/wmt14-en-de/raw/test/newstest2012.en",
     de_raw_file_path="../../data/translation/wmt14-en-de/raw/test/newstest2012.de",
     device=device, max_len=SEQ_LEN)
-test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
+# for testing, only can inference one sentence at a time
+test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
 ref_sents_list = []
 pred_sents_list = []
@@ -211,10 +213,7 @@ for step, data in tqdm(enumerate(test_dataloader), total=len(test_dataloader)):
     # prepare the decoder input and padding mask for inference
     res = transfomer_inference(batch_en_tensor, padding_mask_en_tensor)
     # softmax the logit and move it to cpu
-    logit = torch.softmax(logit, dim=-1).cpu()
-    pred_sents_ids = torch.argmax(logit, dim=-1)
-    pred_sents = pred_sents_ids.tolist()
-    decoded_sents = tokenizer.batch_decode(pred_sents,remove_special_tokens=True)
+    decoded_sents = tokenizer.batch_decode(res,remove_special_tokens=False)
     # extend the the pred_sents_list
     pred_sents_list.extend(decoded_sents)
     # for each ele of ref_sents, put in list and append to ref_sents_list
