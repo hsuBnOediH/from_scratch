@@ -67,16 +67,24 @@ class WMT14ENDEDatasetHuggingFace(data.Dataset):
         assert len(en_sentence) == len(de_sentence), "The number of english and german sentences should be the same"
         self.data = list(zip(en_sentence, de_sentence))
         self.max_len = max_len
-        self.tokenizer = AutoTokenizer.from_pretrained("gpt2",pad_token="<pad>")
+        self.tokenizer = AutoTokenizer.from_pretrained("gpt2",pad_token="<pad>",bos_token="<sos>",eos_token="<eos>",
+                                                       add_bos_token=True, add_eos_token=True,max_length=max_len)
+        self.tokenizer.add_special_tokens({"pad_token": "<pad>", "bos_token": "<sos>", "eos_token": "<eos>"})
+
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        en_sentence,de_sentence = self.data[idx]
+        en_sentence_str,de_sentence_str = self.data[idx]
+        en_sentence_str = "<sos> " + en_sentence_str.strip() + " <eos>"
+        de_sentence_str = "<sos> " + de_sentence_str.strip() + " <eos>"
 
         # run huggingface tokenizer
-        en_sentence = self.tokenizer(en_sentence, padding="max_length", truncation=True, max_length=self.max_len, return_tensors="pt")
-        de_sentence = self.tokenizer(de_sentence, padding="max_length", truncation=True, max_length=self.max_len, return_tensors="pt")
+        en_sentence = self.tokenizer(en_sentence_str, padding="max_length", truncation=True,
+                                     max_length=self.max_len, return_tensors="pt",add_special_tokens=True)
+        de_sentence = self.tokenizer(de_sentence_str, padding="max_length", truncation=True,
+                                     max_length=self.max_len, return_tensors="pt",add_special_tokens=True
+                                     )
 
 
         en_sentence_id = en_sentence["input_ids"].squeeze().to(self.device)
@@ -87,5 +95,7 @@ class WMT14ENDEDatasetHuggingFace(data.Dataset):
             "en_input_ids": en_sentence_id,
             "de_input_ids": de_sentence_id,
             "en_padding_mask": en_padding_mask,
-            "de_padding_mask": de_padding_mask
+            "de_padding_mask": de_padding_mask,
+            "en_sentence_str": en_sentence_str,
+            "de_sentence_str": de_sentence_str
         }

@@ -78,6 +78,7 @@ def _get_padding_mask(attention_mask: torch.Tensor, dtype: torch.dtype) -> torch
     """
     # create padding mask
     # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+
     attention_mask = attention_mask[:, None, None, :]
     attention_mask = 1.0 - attention_mask
     attention_mask = attention_mask.masked_fill(attention_mask.to(torch.bool), torch.finfo(dtype).min)
@@ -195,6 +196,8 @@ class MultiHeadAttention(nn.Module):
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
         if mask is not None:
             # TODO explain the mask fill and why there is a small value
+            # print(f"mask shape: {mask.shape}")
+            # print(f"score shape: {scores.shape}")
             scores = scores + mask
         scores = F.softmax(scores, dim=-1)
         # TODO explain why dropout before
@@ -222,16 +225,22 @@ class MultiHeadAttention(nn.Module):
         # since the dim of score is [batch_size * num_heads * seq_len * d_k], the mask has to un-squeeze at dim 1 and
         # dim -1
         if mask is not None:
-            if self.is_cross:
+            if self.is_cross and self.training:
                 # get the causal mask, the mask is used to prevent the model to look ahead the future token
                 # the dim of the mask is already [ 1 * 1 * seq_len * seq_len]
+                # the shape of the mask is [batch_size * 1 * key_len * memory_len]
+
                 mask = _get_causal_mask(attention_mask=mask,
                                         input_shape = mask.size(),
                                         dtype=q.dtype)
+
             else:
                 # the mask is used to prevent the model to look at the padding token
                 # the dim of the mask is already [batch_size * 1 * seq_len * 1]
-                mask = _get_padding_mask(attention_mask=mask, dtype=q.dtype)
+                if not self.training:
+                    mask = _get_padding_mask(attention_mask=mask, dtype=q.dtype)
+                else:
+                    mask = _get_padding_mask(attention_mask=mask, dtype=q.dtype)
 
         query, key, value = [l(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2) for l, x in
                              zip(self.linears, (q, k, v))]
@@ -391,7 +400,10 @@ class DecoderLayer(nn.Module):
     def forward(self, memory: torch.Tensor, x: torch.Tensor, src_masking: torch.Tensor,
                 tgt_masking: torch.Tensor) -> torch.Tensor:
         x = self.sublayers[0](x, lambda x: self.self_attention(x, x, x, tgt_masking))
-        x = self.sublayers[1](x, lambda x: self.cross_attention(x, memory, memory, src_masking))
+        if self.training:
+            x = self.sublayers[1](x, lambda x: self.cross_attention(x, memory, memory, src_masking))
+        else:
+            x = self.sublayers[1](x, lambda x: self.cross_attention(x, memory, memory, tgt_masking))
         x = self.sublayers[2](x, self.ffn)
         return x
 

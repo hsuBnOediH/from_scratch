@@ -281,7 +281,8 @@ def compute_bleu(reference_corpus, translation_corpus, max_order=4,
         else:
             bp = math.exp(1 - 1.0 / ratio)
         bleu = geo_mean * bp
-    return bleu, precision, bp, ratio, translation_length, reference_length
+    return {"bleu": bleu, "geo_mean": geo_mean, "bp": bp,"unigram": precision[0], "bigram": precision[1],
+            "trigram": precision[2], "fourgram": precision[3]}
 
 
 
