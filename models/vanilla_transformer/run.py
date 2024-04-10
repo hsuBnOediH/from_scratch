@@ -21,10 +21,10 @@ run_name = "self_implemented_transformer_not_converging"
 tokenizer_folder = "../../data/translation/wmt14-en-de/tokenized"
 check_point_folfer_path = "checkpoint/"
 
-with open(tokenizer_folder + "/token_to_id.pkl", "rb") as f:
-    token_to_id = pickle.load(f)
-with open(tokenizer_folder + "/id_to_token.pkl", "rb") as f:
-    id_to_token = pickle.load(f)
+# with open(tokenizer_folder + "/token_to_id.pkl", "rb") as f:
+#     token_to_id = pickle.load(f)
+# with open(tokenizer_folder + "/id_to_token.pkl", "rb") as f:
+#     id_to_token = pickle.load(f)
 # convert the encoded train_en and train_de to id
 
 device = torch.device("cuda" if torch.cuda.is_available() else "mps")
@@ -38,7 +38,7 @@ D_MODEL = 256 if device_type == "mps" else 512
 HIDDEN_DIM = 512 if device_type == "mps" else 2048
 NUM_HEADS = 4
 DROPOUT = 0.1
-VOCAB_SIZE = len(token_to_id)
+# VOCAB_SIZE = len(token_to_id)
 VOCAB_SIZE = 50256
 EPOCHS = 50
 STEPS = 1000000
