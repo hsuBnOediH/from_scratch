@@ -9,10 +9,10 @@ import pickle
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 import wandb
+from transformer_structure import *
+from dataloder import *
+from eval.blue import compute_bleu
 
-from .transformer_structure import TransformerConfig, Transformer
-from .dataloder import WMT14ENDEDataset, WMT14ENDEDatasetHuggingFace
-from .eval.blue import compute_bleu
 
 # REPORT_WANDB = True
 REPORT_WANDB = False
