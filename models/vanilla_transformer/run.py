@@ -10,11 +10,9 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 import wandb
 
-
-from ...models.vanilla_transformer.dataloder import WMT14ENDEDataset, WMT14ENDEDatasetHuggingFace
-from ...models.vanilla_transformer.eval.blue import compute_bleu
-from ...models.vanilla_transformer.transformer_structure import TransformerConfig, Transformer
-
+from .transformer_structure import TransformerConfig, Transformer
+from .dataloder import WMT14ENDEDataset, WMT14ENDEDatasetHuggingFace
+from .eval.blue import compute_bleu
 
 # REPORT_WANDB = True
 REPORT_WANDB = False
