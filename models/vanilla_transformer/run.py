@@ -11,9 +11,9 @@ from torch.utils.data import DataLoader
 import wandb
 
 
-from models.vanilla_transformer.dataloder import WMT14ENDEDataset, WMT14ENDEDatasetHuggingFace
-from models.vanilla_transformer.eval.blue import compute_bleu
-from models.vanilla_transformer.transformer_structure import TransformerConfig, Transformer
+from ...models.vanilla_transformer.dataloder import WMT14ENDEDataset, WMT14ENDEDatasetHuggingFace
+from ...models.vanilla_transformer.eval.blue import compute_bleu
+from ...models.vanilla_transformer.transformer_structure import TransformerConfig, Transformer
 
 
 # REPORT_WANDB = True
